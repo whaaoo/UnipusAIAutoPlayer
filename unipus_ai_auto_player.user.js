@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.0.0
+// @version      5.0.1
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -121,7 +121,7 @@
 
     function getMenuList() {
         let nodes = [];
-        let menuContainer = document.querySelector('.pc-slier-menu-container.show .pc-slider-content-menu') || document.querySelector('.pc-slider-menu-container.show .pc-slider-content-menu') || document.querySelector('.pc-slier-menu-container .pc-slider-content-menu') || document.querySelector('.pc-slider-content-menu') || document.querySelector('.ant-tree') || document.querySelector('[role="tree"]') || document.querySelector('.ant-menu');
+        let menuContainer = document.querySelector('.pc-slider-menu-container.show .pc-slider-content-menu') || document.querySelector('.pc-slier-menu-container.show .pc-slider-content-menu') || document.querySelector('.pc-slider-menu-container .pc-slider-content-menu') || document.querySelector('.pc-slier-menu-container .pc-slider-content-menu') || document.querySelector('#part-menu-view .pc-slider-content-menu') || document.querySelector('#part-menu-view .ant-tree') || document.querySelector('#part-menu-view') || document.querySelector('.pc-slider-content-menu') || document.querySelector('.ant-tree') || document.querySelector('[role="tree"]') || document.querySelector('.ant-menu');
         if(!menuContainer) return [];
 
         const safeText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
@@ -164,6 +164,7 @@
         };
 
         try {
+            console.log('[UAI] getMenuList: strategy 1 - pc-slider-menu structured traversal');
             menuContainer.querySelectorAll('.pc-slider-menu-unit').forEach((unit)=>{
                 const unitName = unit.querySelector('.unit-label-item')?.title || unit.querySelector('.unit-label-item')?.innerText || '';
                 const unitRoot = unit.parentElement || menuContainer;
@@ -184,6 +185,7 @@
         if(nodes.length > 0) return nodes;
 
         try {
+            console.log('[UAI] getMenuList: strategy 2 - flat class traversal');
             let currentUnitName = '';
             let currentSectionName = '';
             const seen = new Set();
@@ -214,6 +216,7 @@
         if(nodes.length > 0) return nodes;
 
         try {
+            console.log('[UAI] getMenuList: strategy 3 - ant-tree indent inference');
             const treeRoot = menuContainer.querySelector('.ant-tree') || menuContainer.querySelector('[role="tree"]') || menuContainer;
             let candidates = Array.from(treeRoot.querySelectorAll('[role="treeitem"]'));
             if(candidates.length === 0) candidates = Array.from(treeRoot.querySelectorAll('.ant-tree-treenode'));
@@ -305,6 +308,79 @@
                 }
             }, 100);
         });
+    }
+
+    function getMenuListWithRetry(maxRetries, intervalMs, onSuccess, onFail) {
+        let retries = 0;
+        console.log('[UAI] getMenuListWithRetry: starting, maxRetries=' + maxRetries + ', interval=' + intervalMs + 'ms');
+
+        function attempt() {
+            clickIKnow();
+            const list = getMenuList();
+            if (list && list.length > 0) {
+                console.log('[UAI] getMenuListWithRetry: success on attempt ' + (retries + 1) + ', found ' + list.length + ' items');
+                if (onSuccess) onSuccess(list);
+                return;
+            }
+            retries++;
+            console.log('[UAI] getMenuListWithRetry: attempt ' + retries + ' failed, ' + (maxRetries - retries) + ' retries left');
+            if (retries < maxRetries) {
+                setTimeout(attempt, intervalMs);
+            } else {
+                console.log('[UAI] getMenuListWithRetry: all retries exhausted');
+                if (onFail) onFail();
+            }
+        }
+
+        attempt();
+    }
+
+    function watchForMenu(callback, timeout) {
+        timeout = timeout || 15000;
+        console.log('[UAI] watchForMenu: starting MutationObserver, timeout=' + timeout + 'ms');
+        let timer;
+        let fired = false;
+
+        const menuSelectors = '.pc-slider-menu-unit, .pc-slider-menu-node, .pc-slider-menu-micro, .ant-tree-treenode, [role="treeitem"]';
+
+        const observer = new MutationObserver(function(mutations) {
+            if (fired) return;
+            for (let i = 0; i < mutations.length; i++) {
+                const mutation = mutations[i];
+                for (let j = 0; j < mutation.addedNodes.length; j++) {
+                    const node = mutation.addedNodes[j];
+                    if (node.nodeType !== 1) continue;
+                    if (node.matches && node.matches(menuSelectors)) {
+                        fired = true;
+                        clearTimeout(timer);
+                        observer.disconnect();
+                        console.log('[UAI] watchForMenu: menu element detected directly');
+                        callback();
+                        return;
+                    }
+                    if (node.querySelectorAll) {
+                        const found = node.querySelectorAll(menuSelectors);
+                        if (found.length > 0) {
+                            fired = true;
+                            clearTimeout(timer);
+                            observer.disconnect();
+                            console.log('[UAI] watchForMenu: menu elements detected in subtree, count=' + found.length);
+                            callback();
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        timer = setTimeout(function() {
+            if (!fired) {
+                observer.disconnect();
+                console.log('[UAI] watchForMenu: timeout, no menu elements detected');
+            }
+        }, timeout);
     }
 
     function getTabs() {
@@ -440,13 +516,8 @@
         contentBox.style.borderRadius = '12px';
         contentBox.style.padding = '16px';
 
-        let menuList = getMenuList();
+        let menuList = [];
 
-        if(!Array.isArray(menuList) || menuList.length === 0) {
-            setTimeout(()=>{
-                addLog('⚠️ 未识别到目录列表，请先展开左侧目录后重试，或刷新页面。');
-            },0);
-        }
         let menuLabel = document.createElement('label');
         menuLabel.innerHTML = '📖 选择起始目录:';
         menuLabel.style.display = 'block';
@@ -455,20 +526,58 @@
         menuLabel.style.fontWeight = '600';
         menuLabel.style.color = '#333';
 
+        let menuRow = document.createElement('div');
+        menuRow.style.display = 'flex';
+        menuRow.style.gap = '8px';
+        menuRow.style.marginBottom = '15px';
+
         let menuSelect = document.createElement('select');
         menuSelect.id = 'unipus-menu-select';
-        menuSelect.style.width = '100%';
+        menuSelect.style.flex = '1';
         menuSelect.style.padding = '8px';
         menuSelect.style.borderRadius = '8px';
         menuSelect.style.border = '2px solid #e0e0e0';
         menuSelect.style.fontSize = '13px';
-        menuSelect.style.marginBottom = '15px';
-        menuList.forEach((item,i)=>{
-            let op = document.createElement('option');
-            op.value = i;
-            op.text = `${item.unit} > ${item.section} > ${item.micro}`;
-            menuSelect.appendChild(op);
-        });
+
+        let refreshBtn = document.createElement('button');
+        refreshBtn.innerHTML = '🔄';
+        refreshBtn.title = '刷新目录列表';
+        refreshBtn.style.padding = '8px 12px';
+        refreshBtn.style.borderRadius = '8px';
+        refreshBtn.style.border = '2px solid #e0e0e0';
+        refreshBtn.style.background = '#f0f0f0';
+        refreshBtn.style.cursor = 'pointer';
+        refreshBtn.style.fontSize = '16px';
+        refreshBtn.style.transition = 'all 0.2s ease';
+
+        menuRow.appendChild(menuSelect);
+        menuRow.appendChild(refreshBtn);
+
+        function populateMenuSelect(list) {
+            menuSelect.innerHTML = '';
+            if (!Array.isArray(list) || list.length === 0) {
+                let op = document.createElement('option');
+                op.value = '';
+                op.text = '未识别到目录，请展开左侧目录后重试';
+                op.disabled = true;
+                menuSelect.appendChild(op);
+                startBtn.disabled = true;
+                startBtn.style.opacity = '0.5';
+                startBtn.style.cursor = 'not-allowed';
+                return;
+            }
+            menuList = list;
+            list.forEach((item, i) => {
+                let op = document.createElement('option');
+                op.value = i;
+                op.text = `${item.unit} > ${item.section} > ${item.micro}`;
+                menuSelect.appendChild(op);
+            });
+            startBtn.disabled = false;
+            startBtn.style.opacity = '1';
+            startBtn.style.cursor = 'pointer';
+            addLog('✅ 成功识别 ' + list.length + ' 个目录项');
+        }
 
         let timeLabel = document.createElement('label');
         timeLabel.innerHTML = '⏱️ 总刷课时长(分钟):';
@@ -538,7 +647,7 @@
         btnContainer.appendChild(pauseBtn);
 
         contentBox.appendChild(menuLabel);
-        contentBox.appendChild(menuSelect);
+        contentBox.appendChild(menuRow);
         contentBox.appendChild(timeLabel);
         contentBox.appendChild(timeInput);
         contentBox.appendChild(btnContainer);
@@ -549,6 +658,45 @@
         panel.appendChild(contentBox);
 
         document.body.appendChild(panel);
+
+        populateMenuSelect([]);
+
+        function initMenuDetection() {
+            clickIKnow();
+            const initialList = getMenuList();
+            if (initialList && initialList.length > 0) {
+                populateMenuSelect(initialList);
+                return;
+            }
+            addLog('⏳ 正在等待目录加载...');
+            getMenuListWithRetry(10, 1000,
+                function(list) {
+                    populateMenuSelect(list);
+                },
+                function() {
+                    addLog('⚠️ 目录检测超时，请展开左侧目录后点击刷新按钮重试');
+                }
+            );
+            watchForMenu(function() {
+                addLog('🔍 检测到目录元素变化，重新扫描...');
+                const freshList = getMenuList();
+                if (freshList && freshList.length > 0) {
+                    populateMenuSelect(freshList);
+                }
+            }, 15000);
+        }
+
+        setTimeout(initMenuDetection, 500);
+
+        refreshBtn.onclick = function() {
+            addLog('🔄 正在刷新目录列表...');
+            refreshBtn.style.background = '#e0e0e0';
+            setTimeout(function() { refreshBtn.style.background = '#f0f0f0'; }, 300);
+            initMenuDetection();
+        };
+
+        refreshBtn.onmouseenter = function() { this.style.background = '#e8e8e8'; };
+        refreshBtn.onmouseleave = function() { this.style.background = '#f0f0f0'; };
 
         pauseBtn.onclick = function(){
             isPaused = !isPaused;
