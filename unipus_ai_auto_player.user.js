@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.2.8
+// @version      5.2.12
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -27,11 +27,7 @@ const safeText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() :
 
 const pickName = (el) => {
   if (!el) return '';
-  const t1 = el.title;
-  if (t1) return safeText(t1);
-  const t2 = el.getAttribute ? el.getAttribute('title') : '';
-  if (t2) return safeText(t2);
-  return safeText(el.innerText || el.textContent);
+  return safeText(el.title || el.innerText || el.textContent);
 };
 
 const pickClickable = (root) => {
@@ -398,10 +394,6 @@ if (IS_IFRAME || IS_IPUB) {
     });
   }
 
-  function getNodePath(el) {
-    return ''; 
-  }
-
   function clickByPath(path, isId) {
     if (!path) return false;
     try {
@@ -721,25 +713,13 @@ function safeClickAsync(target) {
 
     if (target._iframePath && !(target instanceof Element)) {
       const ok = sendToIframe({ type: 'UAI_CMD', cmd: 'CLICK', path: target._iframePath, isId: target._isId });
-      
-      if (!ok) {
-         if (target instanceof Element) {
-             resolve(safeClick(target));
-         } else {
-             resolve(false); 
-         }
-         return;
-      }
+      if (!ok) { resolve(false); return; }
 
       _clickResolve = resolve;
       setTimeout(() => {
         if (_clickResolve === resolve) {
           _clickResolve = null;
-          if (target instanceof Element) {
-              resolve(safeClick(target));
-          } else {
-              resolve(false); 
-          }
+          resolve(false);
         }
       }, 3000);
     } else {
@@ -769,8 +749,9 @@ function requestIframeScan() {
 function waitForElement(selector, timeout = 3000) {
   return new Promise((resolve) => {
     const startTime = Date.now();
+    let tick = 0;
     const check = setInterval(() => {
-      clickIKnow();
+      if (++tick % 5 === 0) clickIKnow();
       if (shouldRestart) { clearInterval(check); resolve(null); return; }
       const el = document.querySelector(selector);
       if (el || Date.now() - startTime > timeout) {
@@ -860,6 +841,26 @@ function getTasks() {
     tasks.push({ name: task.title || task.innerText, element: task });
   });
   return tasks;
+}
+
+function isTabActive(tab) {
+  const el = tab.element;
+  if (!el) return false;
+  const ariaSelected = el.getAttribute ? el.getAttribute('aria-selected') : null;
+  if (ariaSelected === 'true') return true;
+  const parentCol = el.closest('.ant-col');
+  if (parentCol && parentCol.classList.contains('ant-tabs-tab-active')) return true;
+  if (el.classList.contains('active')) return true;
+  return false;
+}
+
+function isTaskActive(task) {
+  const el = task.element;
+  if (!el) return false;
+  if (el.classList.contains('active')) return true;
+  if (el.classList.contains('pc-task-active')) return true;
+  if (el.classList.contains('current')) return true;
+  return false;
 }
 
 function addLog(message, isCountdown = false) {
@@ -1039,7 +1040,7 @@ function createControlPanel() {
   const mkEl = (tag, style = '') => { const el = document.createElement(tag); el.style.cssText = style; return el; };
 
   let title = mkDiv('font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;');
-  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.8</span>';
+  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.12</span>';
 
   let authorInfo = mkDiv('display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;');
   let authorText = mkEl('p', 'margin:0;font-size:12px;color:rgba(255,255,255,0.9);');
@@ -1362,22 +1363,14 @@ function createControlPanel() {
       addLog(`🚀 共${jobs.length}个目录，每个约${Math.round(perStepTime)}秒`);
 
       for (let idx = 0; isRunning && idx < jobs.length; idx++) {
-        while (isPaused && isRunning) {
-          await new Promise((r) => setTimeout(r, 500));
-          if (shouldRestart) break;
-        }
+        await waitWhilePaused();
         if (shouldRestart) {
           shouldRestart = false;
           const newIdx = +(menuSelect.value || '0');
           jobs = menuList.slice(newIdx);
           idx = -1;
           clickIKnow();
-          if (jobs[0]?.element) {
-            const ok = await safeClickAsync(jobs[0].element);
-            if (!ok) addLog('⚠️ 目录点击失败，请展开目录后重试');
-          }
-          await new Promise((r) => setTimeout(r, 2000));
-          addLog(`🔄 已跳转到: [${newIdx + 1}] ${jobs[0]?.micro || ''}`);
+          addLog(`🔄 配置已重置，继续从 [${newIdx + 1}] ${jobs[0]?.micro || ''} 开始`);
           continue;
         }
         if (!isRunning || isPaused) continue;
@@ -1393,8 +1386,6 @@ function createControlPanel() {
         }
 
         if (shouldRestart) continue;
-        await new Promise((r) => setTimeout(r, 2000));
-        if (shouldRestart) continue;
 
         clickIKnow();
         await waitForElement('.pc-header-tabs-container', 3000);
@@ -1407,17 +1398,11 @@ function createControlPanel() {
           const tabTime = perStepTime / tabs.length;
           for (let t = 0; t < tabs.length; t++) {
             if (shouldRestart) break;
-            while (isPaused && isRunning) {
-              await new Promise((r) => setTimeout(r, 500));
-              if (shouldRestart) break;
-            }
-            if (!isRunning || shouldRestart) break;
-            if (isPaused) continue;
+            await waitWhilePaused();
+            if (shouldRestart || !isRunning) break;
             clickIKnow();
             addLog(`📑 Tab[${t + 1}/${tabs.length}]: ${tabs[t].name}`);
-            if (tabs[t].element) { clickIKnow(); safeClick(tabs[t].element); clickIKnow(); }
-            if (shouldRestart) break;
-            await new Promise((r) => setTimeout(r, 2000));
+            if (tabs[t].element && tabs.length > 1 && !isTabActive(tabs[t])) { clickIKnow(); safeClick(tabs[t].element); clickIKnow(); }
             if (shouldRestart) break;
             clickIKnow();
             await waitForElement('.pc-header-tasks-row', 3000);
@@ -1436,15 +1421,10 @@ function createControlPanel() {
               const taskTime = tabTime / tabTasks.length;
               for (let k = 0; k < tabTasks.length; k++) {
                 if (shouldRestart) break;
-                while (isPaused && isRunning) {
-                  await new Promise((r) => setTimeout(r, 500));
-                  if (shouldRestart) break;
-                }
-                if (!isRunning || shouldRestart) break;
-                if (isPaused) continue;
+                await waitWhilePaused();
+                if (shouldRestart || !isRunning) break;
                 const taskName = `✏️ Task[${k + 1}/${tabTasks.length}]: ${tabTasks[k].name}`;
-                clickIKnow();
-                if (tabTasks[k].element) { clickIKnow(); tabTasks[k].element.click(); clickIKnow(); }
+                if (tabTasks[k].element && tabTasks.length > 1 && !isTaskActive(tabTasks[k])) { clickIKnow(); tabTasks[k].element.click(); clickIKnow(); }
                 await waitTime(taskTime, taskName);
                 if (shouldRestart) break;
                 clickIKnow();
@@ -1464,15 +1444,10 @@ function createControlPanel() {
             const taskTime = perStepTime / directTasks.length;
             for (let k = 0; k < directTasks.length; k++) {
               if (shouldRestart) break;
-              while (isPaused && isRunning) {
-                await new Promise((r) => setTimeout(r, 500));
-                if (shouldRestart) break;
-              }
-              if (!isRunning || shouldRestart) break;
-              if (isPaused) continue;
+              await waitWhilePaused();
+              if (shouldRestart || !isRunning) break;
               const taskName = `✏️ Task[${k + 1}/${directTasks.length}]: ${directTasks[k].name}`;
-              clickIKnow();
-              if (directTasks[k].element) { clickIKnow(); directTasks[k].element.click(); clickIKnow(); }
+              if (directTasks[k].element && directTasks.length > 1 && !isTaskActive(directTasks[k])) { clickIKnow(); directTasks[k].element.click(); clickIKnow(); }
               await waitTime(taskTime, taskName);
               if (shouldRestart) break;
               clickIKnow();
@@ -1495,15 +1470,18 @@ function createControlPanel() {
   };
 }
 
+async function waitWhilePaused() {
+  while (isPaused && isRunning && !shouldRestart) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
 async function waitTime(seconds, taskName) {
   let remaining = Math.round(seconds);
   let tick = 0;
   while (remaining > 0) {
-    while (isPaused && isRunning) {
-      await new Promise((r) => setTimeout(r, 500));
-      if (shouldRestart) break;
-    }
-    if (!isRunning || isPaused || shouldRestart) break;
+    await waitWhilePaused();
+    if (shouldRestart || !isRunning) break;
     if (tick % 5 === 0) clickIKnow();
     tick++;
     // 视频播放检测：播放时暂停倒计时
