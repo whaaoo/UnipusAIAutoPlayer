@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.1.0
+// @version      5.2.4
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -80,6 +80,16 @@ function clickIKnow() {
       });
     } catch (e) {}
   });
+  // 通用文本匹配：查找包含"确认"/"确定"文字的可见按钮
+  try {
+    const allBtns = document.querySelectorAll('button, .btn, a[role="button"], span[role="button"]');
+    allBtns.forEach((btn) => {
+      const text = (btn.textContent || btn.innerText || '').trim();
+      if ((text.includes('确认') || text.includes('确定')) && btn.offsetParent !== null) {
+        try { if (typeof btn.click === 'function') btn.click(); } catch (e) {}
+      }
+    });
+  } catch (e) {}
 }
 
 function getMenuList(doc) {
@@ -128,6 +138,12 @@ function getMenuList(doc) {
         unit.querySelector('.unit-label-item')?.title ||
         unit.querySelector('.unit-label-item')?.innerText || '';
       const unitRoot = unit.parentElement || menuContainer;
+      unitRoot.querySelectorAll('.pc-slider-menu-node').forEach((node) => {
+        if (node.closest('.pc-slider-menu-section')) return;
+        const clickable = pickClickable(node);
+        const microName = pickName(clickable) || pickName(node);
+        pushNode(unitName, '', microName, clickable);
+      });
       unitRoot.querySelectorAll('.pc-slider-menu-section').forEach((section) => {
         const sectionName =
           section.querySelector('span')?.title ||
@@ -503,9 +519,86 @@ let lastTimeValue = 60;
 let lastStartIdx = 0;
 let perStepTime = 0;
 let shouldRestart = false;
+let videoPlaybackEnabled = false;
 
 let _menuListCache = [];
 let _clickResolve = null;
+
+function findVideoElement() {
+  const vjsVideo = document.querySelector('video.vjs-tech');
+  if (vjsVideo) return vjsVideo;
+  const video = document.querySelector('video');
+  if (video) return video;
+  try {
+    const iw = getIframeWin();
+    if (iw && iw.document) {
+      const iframeVideo = iw.document.querySelector('video.vjs-tech') || iw.document.querySelector('video');
+      if (iframeVideo) return iframeVideo;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function playVideo() {
+  const video = findVideoElement();
+  if (!video) return;
+  if (!video.paused) return;
+
+  // 先尝试静音播放（绕开浏览器自动播放限制）
+  video.muted = true;
+  try {
+    const promise = video.play();
+    if (promise) {
+      promise.then(() => {
+        video.muted = false;
+      }).catch(() => {});
+    } else {
+      video.muted = false;
+    }
+  } catch (e) {}
+
+  // 降级：点击 Video.js 大播放按钮
+  const bigBtn = document.querySelector('.vjs-big-play-button');
+  if (bigBtn) {
+    try { bigBtn.click(); } catch (e) {}
+  }
+
+  // 再降级：点击控制栏播放按钮
+  const playBtn = document.querySelector('.vjs-play-control');
+  if (playBtn) {
+    try { playBtn.click(); } catch (e) {}
+  }
+}
+
+function isVideoPlaying(video) {
+  if (!video) return false;
+  return !video.paused && !video.ended && video.readyState > 2;
+}
+
+function waitForVideoEnd() {
+  return new Promise((resolve) => {
+    const video = findVideoElement();
+    if (!video) { resolve(); return; }
+    if (video.ended) { resolve(); return; }
+    playVideo();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(stateCheck);
+      video.removeEventListener('ended', onEnded);
+      resolve();
+    };
+    const onEnded = () => finish();
+    video.addEventListener('ended', onEnded);
+    // 定期检查脚本暂停/重启状态，以及视频是否被移除
+    const stateCheck = setInterval(() => {
+      if (shouldRestart || !isRunning) { finish(); return; }
+      if (!findVideoElement()) { finish(); return; }
+    }, 1000);
+    setTimeout(finish, 30 * 60 * 1000);
+  });
+}
 
 function getIframeWin() {
   try {
@@ -913,7 +1006,7 @@ function createControlPanel() {
   const mkEl = (tag, style = '') => { const el = document.createElement(tag); el.style.cssText = style; return el; };
 
   let title = mkDiv('font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;');
-  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.1.0</span>';
+  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.4</span>';
 
   let authorInfo = mkDiv('display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;');
   let authorText = mkEl('p', 'margin:0;font-size:12px;color:rgba(255,255,255,0.9);');
@@ -1060,6 +1153,20 @@ function createControlPanel() {
   timeInput.min = 1;
   timeInput.id = 'unipus-time-input';
 
+  let videoRow = mkDiv('display:flex;align-items:center;gap:8px;margin-bottom:15px;');
+  let videoCheckbox = mkEl('input', 'width:18px;height:18px;cursor:pointer;');
+  videoCheckbox.type = 'checkbox';
+  videoCheckbox.id = 'unipus-video-toggle';
+  let videoLabelEl = mkEl('label', 'font-size:13px;color:#555;cursor:pointer;');
+  videoLabelEl.htmlFor = 'unipus-video-toggle';
+  videoLabelEl.textContent = '🎬 启用视频播放（等待视频结束后自动跳转，播放期间不计时）';
+  videoCheckbox.addEventListener('change', function() {
+    videoPlaybackEnabled = this.checked;
+    addLog(videoPlaybackEnabled ? '🎬 已启用视频播放模式' : '⏱️ 已切换为纯倒计时模式');
+  });
+  videoRow.appendChild(videoCheckbox);
+  videoRow.appendChild(videoLabelEl);
+
   let btnContainer = mkDiv('display:flex;gap:10px;margin-bottom:15px;');
   startBtn = mkEl('button',
     'flex:1;padding:12px;background:linear-gradient(135deg,#0ea5e9 0%,#10b981 100%);' +
@@ -1085,6 +1192,7 @@ function createControlPanel() {
   contentBox.appendChild(menuRow);
   contentBox.appendChild(timeLabel);
   contentBox.appendChild(timeInput);
+  contentBox.appendChild(videoRow);
   contentBox.appendChild(btnContainer);
   contentBox.appendChild(log);
   panel.appendChild(title);
@@ -1261,30 +1369,9 @@ function createControlPanel() {
 
         clickIKnow();
         const tabs = getTabs();
-        const tasks = getTasks();
-        let totalSteps = 0;
 
         if (tabs.length > 0) {
-          for (let t = 0; t < tabs.length; t++) {
-            if (shouldRestart) break;
-            clickIKnow();
-            if (tabs[t].element) tabs[t].element.click();
-            clickIKnow();
-            await new Promise((r) => setTimeout(r, 1500));
-            if (shouldRestart) break;
-            await waitForElement('.pc-header-tasks-row', 2000);
-            if (shouldRestart) break;
-            const tt = getTasks();
-            totalSteps += tt.length > 0 ? tt.length : 1;
-          }
-        } else {
-          totalSteps = tasks.length > 0 ? tasks.length : 1;
-        }
-
-        if (shouldRestart) continue;
-        const stepTime = perStepTime / totalSteps;
-
-        if (tabs.length > 0) {
+          const tabTime = perStepTime / tabs.length;
           for (let t = 0; t < tabs.length; t++) {
             if (shouldRestart) break;
             while (isPaused && isRunning) {
@@ -1302,9 +1389,14 @@ function createControlPanel() {
             clickIKnow();
             await waitForElement('.pc-header-tasks-row', 3000);
             if (shouldRestart) break;
+            if (videoPlaybackEnabled) {
+              addLog('🎬 等待视频播放结束...');
+              await waitForVideoEnd();
+            }
             clickIKnow();
             const tabTasks = getTasks();
             if (tabTasks.length > 0) {
+              const taskTime = tabTime / tabTasks.length;
               for (let k = 0; k < tabTasks.length; k++) {
                 if (shouldRestart) break;
                 while (isPaused && isRunning) {
@@ -1316,13 +1408,13 @@ function createControlPanel() {
                 const taskName = `✏️ Task[${k + 1}/${tabTasks.length}]: ${tabTasks[k].name}`;
                 clickIKnow();
                 if (tabTasks[k].element) { clickIKnow(); tabTasks[k].element.click(); clickIKnow(); }
-                await waitTime(stepTime, taskName);
+                await waitTime(taskTime, taskName);
                 if (shouldRestart) break;
                 clickIKnow();
               }
               if (shouldRestart) break;
             } else {
-              await waitTime(stepTime, '');
+              await waitTime(tabTime, '');
               if (shouldRestart) break;
               clickIKnow();
             }
@@ -1331,6 +1423,7 @@ function createControlPanel() {
         } else {
           const directTasks = getTasks();
           if (directTasks.length > 0) {
+            const taskTime = perStepTime / directTasks.length;
             for (let k = 0; k < directTasks.length; k++) {
               if (shouldRestart) break;
               while (isPaused && isRunning) {
@@ -1342,7 +1435,7 @@ function createControlPanel() {
               const taskName = `✏️ Task[${k + 1}/${directTasks.length}]: ${directTasks[k].name}`;
               clickIKnow();
               if (directTasks[k].element) { clickIKnow(); directTasks[k].element.click(); clickIKnow(); }
-              await waitTime(stepTime, taskName);
+              await waitTime(taskTime, taskName);
               if (shouldRestart) break;
               clickIKnow();
             }
@@ -1373,6 +1466,20 @@ async function waitTime(seconds, taskName) {
     }
     if (!isRunning || isPaused || shouldRestart) break;
     clickIKnow();
+    // 视频播放检测：播放时暂停倒计时
+    if (videoPlaybackEnabled) {
+      const video = findVideoElement();
+      if (video && isVideoPlaying(video)) {
+        if (taskName) addLog(taskName, true);
+        addLog('🎬 检测到视频播放中，暂停倒计时...');
+        await waitForVideoEnd();
+        addLog('🎬 视频播放结束，恢复倒计时');
+        continue;
+      }
+      if (video && video.paused) {
+        playVideo();
+      }
+    }
     if (taskName) addLog(`${taskName} ⏳${remaining}秒`, true);
     await new Promise((r) => setTimeout(r, 1000));
     remaining--;
