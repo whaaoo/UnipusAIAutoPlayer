@@ -33,8 +33,8 @@ U校园AI自动刷时长工具
 
 #### 2. 安装脚本
 点击下方链接安装脚本：
-- [从 GitHub 安装](https://github.com/uxudjs/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
-- [从蓝奏云下载](https://uxudjs.lanzouw.com/b007u7hrej) 密码:6z3k
+- [从 GitHub 安装](https://github.com/whaaoo/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
+
 
 #### 3. 使用步骤
 1. 打开U校园课程学习平台页面 (https://ucontent.unipus.cn/*)
@@ -77,8 +77,8 @@ U校園AI自動刷時長工具
 
 #### 2. 安裝腳本
 點選下方連結安裝腳本：
-- [從 GitHub 安裝](https://github.com/uxudjs/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
-- [從藍奏雲下載](https://uxudjs.lanzouw.com/b007u7hrej) 密碼:6z3k
+- [從 GitHub 安裝](https://github.com/whaaoo/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
+
 
 #### 3. 使用步驟
 1. 開啟U校園課程學習平台頁面 (https://ucontent.unipus.cn/*)
@@ -121,8 +121,8 @@ First, install a userscript manager (choose one):
 
 #### 2. Install Script
 Click the link below to install:
-- [Install from GitHub](https://github.com/uxudjs/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
-- [Download from Lanzou Cloud](https://uxudjs.lanzouw.com/b007u7hrej) Password:6z3k
+- [Install from GitHub](https://github.com/whaaoo/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js)
+
 
 #### 3. Usage
 1. Open UCampus course learning platform page (https://ucontent.unipus.cn/*)

@@ -8,12 +8,12 @@
 // @icon         https://ucontent.unipus.cn/favicon.ico
 // @grant        none
 // @run-at       document-end
-// @homepage     https://github.com/uxudjs/UnipusAIAutoPlayer
-// @homepageURL  https://github.com/uxudjs/UnipusAIAutoPlayer
-// @supportURL   https://github.com/uxudjs/UnipusAIAutoPlayer/issues
-// @license      https://github.com/uxudjs/UnipusAIAutoPlayer/blob/main/LICENSE
-// @updateURL    https://github.com/uxudjs/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js
-// @downloadURL  https://github.com/uxudjs/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js
+// @homepage     https://github.com/whaaoo/UnipusAIAutoPlayer
+// @homepageURL  https://github.com/whaaoo/UnipusAIAutoPlayer
+// @supportURL   https://github.com/whaaoo/UnipusAIAutoPlayer/issues
+// @license      https://github.com/whaaoo/UnipusAIAutoPlayer/blob/main/LICENSE
+// @updateURL    https://github.com/whaaoo/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js
+// @downloadURL  https://github.com/whaaoo/UnipusAIAutoPlayer/raw/main/unipus_ai_auto_player.user.js
 // ==/UserScript==
 
 (function () {
@@ -22,6 +22,30 @@
 const IS_IFRAME = window.self !== window.top;
 const IS_IPUB   = location.hostname.includes('ipub.unipus.cn');
 const IS_UCONTENT = location.hostname.includes('ucontent.unipus.cn');
+
+function parseIndices(inputStr, maxLen) {
+  if (!inputStr || !inputStr.trim()) {
+    return Array.from({length: maxLen}, (_, i) => i);
+  }
+  const parts = inputStr.split(',');
+  const indices = new Set();
+  for (const p of parts) {
+    if (p.includes('-')) {
+      const [start, end] = p.split('-').map(Number);
+      if (!isNaN(start) && !isNaN(end)) {
+        for (let i = start; i <= end; i++) {
+          if (i >= 1 && i <= maxLen) indices.add(i - 1);
+        }
+      }
+    } else {
+      const val = Number(p);
+      if (!isNaN(val) && val >= 1 && val <= maxLen) {
+        indices.add(val - 1);
+      }
+    }
+  }
+  return Array.from(indices).sort((a, b) => a - b);
+}
 
 const safeText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
 
@@ -951,7 +975,7 @@ function showFeedbackPopup(title) {
     'flex:1;padding:12px;background:#333;color:#fff;border:none;' +
     'border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;';
   issueBtn.addEventListener('click', function () {
-    window.open('https://github.com/uxudjs/UnipusAIAutoPlayer/issues/new', '_blank');
+    window.open('https://github.com/whaaoo/UnipusAIAutoPlayer/issues/new', '_blank');
   });
 
   btns.appendChild(downloadBtn);
@@ -1046,7 +1070,7 @@ function createControlPanel() {
   let authorText = mkEl('p', 'margin:0;font-size:12px;color:rgba(255,255,255,0.9);');
   authorText.textContent = '作者: UXU倒計时';
   let githubLink = mkEl('a', 'font-size:12px;color:#fff;');
-  githubLink.href = 'https://github.com/uxudjs/UnipusAIAutoPlayer';
+  githubLink.href = 'https://github.com/whaaoo/UnipusAIAutoPlayer';
   githubLink.textContent = '📦 GitHub仓库';
   authorInfo.appendChild(authorText);
   // 反馈按钮
@@ -1116,6 +1140,15 @@ function createControlPanel() {
   let _lastMenuHash = '';  
   let _menuDetectionDone = false;  
 
+  function updateMenuTriggerText() {
+    const checked = menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked');
+    if (checked.length === 0) {
+      menuTrigger.textContent = '未选择任何目录';
+    } else {
+      menuTrigger.textContent = `已选择 ${checked.length} 个目录`;
+    }
+  }
+
   function populateMenuSelect(list) {
     if (!Array.isArray(list) || list.length === 0) {
       menuDropdown.innerHTML = '';
@@ -1123,7 +1156,6 @@ function createControlPanel() {
       empty.textContent = '未识别到目录，请展开左侧目录后重试';
       menuDropdown.appendChild(empty);
       menuTrigger.textContent = '请选择起始目录';
-      menuSelect.value = '0';
       _lastMenuHash = '';
       if (startBtn) { startBtn.disabled = true; startBtn.style.opacity = '0.5'; startBtn.style.cursor = 'not-allowed'; }
       if (_menuDetectionDone) { showFeedbackPopup('目录识别失败'); }
@@ -1134,6 +1166,27 @@ function createControlPanel() {
     _lastMenuHash = newHash;
     menuDropdown.innerHTML = '';
     menuList = list;
+
+    const actionRow = mkDiv('display:flex;padding:8px;border-bottom:1px solid #e0e0e0;background:#f9f9f9;position:sticky;top:0;z-index:1;');
+    const selectAllBtn = mkEl('button', 'flex:1;margin-right:4px;padding:4px;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:#fff;');
+    selectAllBtn.textContent = '全选';
+    const selectNoneBtn = mkEl('button', 'flex:1;margin-left:4px;padding:4px;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:#fff;');
+    selectNoneBtn.textContent = '反选';
+    actionRow.appendChild(selectAllBtn);
+    actionRow.appendChild(selectNoneBtn);
+    menuDropdown.appendChild(actionRow);
+
+    selectAllBtn.onclick = (e) => {
+      e.stopPropagation();
+      menuDropdown.querySelectorAll('.unipus-dir-checkbox').forEach(cb => { cb.checked = true; cb.dispatchEvent(new Event('change')); });
+      updateMenuTriggerText();
+    };
+    selectNoneBtn.onclick = (e) => {
+      e.stopPropagation();
+      menuDropdown.querySelectorAll('.unipus-dir-checkbox').forEach(cb => { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); });
+      updateMenuTriggerText();
+    };
+
     let prevUnit = '';
     list.forEach((item, i) => {
       if (item.unit && item.unit !== prevUnit) {
@@ -1144,34 +1197,63 @@ function createControlPanel() {
       }
       const itemDiv = mkDiv(
         'padding:8px 12px;padding-left:' + (item.section ? '36px' : '24px') + ';' +
-        'font-size:13px;color:#333;cursor:pointer;overflow:hidden;text-overflow:ellipsis;' +
-        'white-space:nowrap;box-sizing:border-box;transition:background 0.15s ease;'
+        'font-size:13px;color:#333;cursor:pointer;display:flex;align-items:center;transition:background 0.15s ease;'
       );
-      itemDiv.textContent = item.micro;
-      itemDiv.dataset.index = i;
+      const cb = mkEl('input', 'margin-right:8px;cursor:pointer;flex-shrink:0;');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.className = 'unipus-dir-checkbox';
+      cb.dataset.index = i;
+      
+      const label = mkEl('span', 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
+      label.textContent = item.micro;
+
+      itemDiv.appendChild(cb);
+      itemDiv.appendChild(label);
+
+      const detailDiv = mkDiv('padding:4px 12px 8px ' + (item.section ? '58px' : '46px') + ';display:flex;gap:10px;background:#f9f9f9;border-bottom:1px solid #eee;');
+      const tTabWrap = mkDiv('display:flex;align-items:center;gap:4px;');
+      const l1 = mkEl('span', 'font-size:11px;color:#666;');
+      l1.textContent = 'Tab:';
+      tTabWrap.appendChild(l1);
+      const tTabInput = mkEl('input', 'width:60px;padding:2px 4px;font-size:11px;border:1px solid #ccc;border-radius:4px;');
+      tTabInput.className = 'unipus-dir-tab-input';
+      tTabInput.placeholder = '1,3 / 1-3';
+      tTabInput.dataset.index = i;
+      tTabInput.onclick = e => e.stopPropagation();
+      tTabWrap.appendChild(tTabInput);
+      
+      const tTaskWrap = mkDiv('display:flex;align-items:center;gap:4px;');
+      const l2 = mkEl('span', 'font-size:11px;color:#666;');
+      l2.textContent = 'Task:';
+      tTaskWrap.appendChild(l2);
+      const tTaskInput = mkEl('input', 'width:60px;padding:2px 4px;font-size:11px;border:1px solid #ccc;border-radius:4px;');
+      tTaskInput.className = 'unipus-dir-task-input';
+      tTaskInput.placeholder = '1,3 / 1-3';
+      tTaskInput.dataset.index = i;
+      tTaskInput.onclick = e => e.stopPropagation();
+      tTaskWrap.appendChild(tTaskInput);
+
+      detailDiv.appendChild(tTabWrap);
+      detailDiv.appendChild(tTaskWrap);
+
       itemDiv.addEventListener('mouseenter', function () { this.style.background = '#e8f4fd'; });
       itemDiv.addEventListener('mouseleave', function () { this.style.background = ''; });
       itemDiv.addEventListener('click', (e) => {
         e.stopPropagation();
-        menuSelect.value = String(i);
-        menuTrigger.textContent = item.micro;
-        menuDropdown.style.display = 'none';
-        menuArrow.textContent = '▼';
-        menuDropdown.querySelectorAll('.menu-item-selected').forEach((el) => {
-          el.classList.remove('menu-item-selected');
-          el.style.background = '';
-          el.style.fontWeight = 'normal';
-        });
-        itemDiv.classList.add('menu-item-selected');
-        itemDiv.style.background = '#d0ecfb';
-        itemDiv.style.fontWeight = 'bold';
+        if (e.target !== cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
+        updateMenuTriggerText();
       });
-      menuDropdown.appendChild(itemDiv);
-      if (i === 0) {
-        menuSelect.value = '0';
-        menuTrigger.textContent = item.micro;
-      }
+      cb.addEventListener('change', () => {
+         detailDiv.style.display = cb.checked ? 'flex' : 'none';
+      });
+
+      const wrapper = mkDiv('');
+      wrapper.appendChild(itemDiv);
+      wrapper.appendChild(detailDiv);
+      menuDropdown.appendChild(wrapper);
     });
+    updateMenuTriggerText();
     if (startBtn) { startBtn.disabled = false; startBtn.style.opacity = '1'; startBtn.style.cursor = 'pointer'; }
     addLog('✅ 成功识别 ' + list.length + ' 个目录项');
   }
@@ -1301,18 +1383,15 @@ function createControlPanel() {
       pauseBtn.style.background = '#ffa500';
       removePauseLine();
       const curTime = Math.max(1, +timeInput.value);
-      const curIdx = +(menuSelect.value || '0');
-      if (curTime !== lastTimeValue || curIdx !== lastStartIdx) {
+      if (curTime !== lastTimeValue) {
         removeCountdownLine();
-        const jobs = menuList.slice(curIdx);
-        if (!Array.isArray(jobs) || !jobs.length) {
-          addLog('⚠️ 目录列表为空，请先展开目录后重试');
+        const checkedCbs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'));
+        if (!checkedCbs.length) {
+          addLog('⚠️ 未勾选任何目录');
           return;
         }
-        perStepTime = (curTime * 60) / jobs.length;
-        addLog(`⚙️ 配置已修改，立即跳转: 共${jobs.length}个目录，每个约${Math.round(perStepTime)}秒`);
+        addLog(`⚙️ 配置已修改，立即跳转: 共勾选${checkedCbs.length}个目录，总挂机约${curTime}分钟`);
         lastTimeValue = curTime;
-        lastStartIdx = curIdx;
         shouldRestart = true;
       } else {
         addLog('▶️ 继续运行');
@@ -1348,35 +1427,57 @@ function createControlPanel() {
     pauseBtn.style.background = '#ffa500';
 
     lastTimeValue = Math.max(1, +timeInput.value);
-    lastStartIdx = +(menuSelect.value || '0');
-    let jobs = menuList.slice(lastStartIdx);
+    
+    let jobs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'))
+                    .map(cb => {
+                      const idx = cb.dataset.index;
+                      const tabInput = menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${idx}"]`);
+                      const taskInput = menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${idx}"]`);
+                      return {
+                        ...menuList[idx],
+                        targetTabStr: tabInput ? tabInput.value : '',
+                        targetTaskStr: taskInput ? taskInput.value : ''
+                      };
+                    })
+                    .filter(Boolean);
+                    
     if (!jobs.length) {
-      addLog('⚠️ 目录列表为空，请先展开目录后重试');
+      addLog('⚠️ 未勾选任何目录，请先勾选目标目录');
       isRunning = false;
       startBtn.style.display = 'block';
       pauseBtn.style.display = 'none';
       return;
     }
-    perStepTime = (lastTimeValue * 60) / jobs.length;
 
     (async function loop() {
-      addLog(`🚀 共${jobs.length}个目录，每个约${Math.round(perStepTime)}秒`);
+      const perStepTime = (lastTimeValue * 60) / jobs.length;
+      addLog(`🚀 共勾选${jobs.length}个目录，总挂机约${lastTimeValue}分钟，每个目录约${Math.round(perStepTime)}秒`);
 
       for (let idx = 0; isRunning && idx < jobs.length; idx++) {
         await waitWhilePaused();
         if (shouldRestart) {
           shouldRestart = false;
-          const newIdx = +(menuSelect.value || '0');
-          jobs = menuList.slice(newIdx);
+          jobs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'))
+                      .map(cb => {
+                        const i2 = cb.dataset.index;
+                        const tInput = menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${i2}"]`);
+                        const tkInput = menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${i2}"]`);
+                        return {
+                          ...menuList[i2],
+                          targetTabStr: tInput ? tInput.value : '',
+                          targetTaskStr: tkInput ? tkInput.value : ''
+                        };
+                      })
+                      .filter(Boolean);
           idx = -1;
           clickIKnow();
-          addLog(`🔄 配置已重置，继续从 [${newIdx + 1}] ${jobs[0]?.micro || ''} 开始`);
+          addLog(`🔄 配置已重置，将重新从第1个勾选的目录开始`);
           continue;
         }
         if (!isRunning || isPaused) continue;
 
         clickIKnow();
-        addLog(`📂 [${lastStartIdx + idx + 1}/${menuList.length}] ${jobs[idx].micro}`);
+        addLog(`📂 [${idx + 1}/${jobs.length}] ${jobs[idx].micro}`);
 
         if (jobs[idx].element) {
           clickIKnow();
@@ -1386,27 +1487,49 @@ function createControlPanel() {
         }
 
         if (shouldRestart) continue;
+        await new Promise((r) => setTimeout(r, 2000));
+        if (shouldRestart) continue;
 
         clickIKnow();
         await waitForElement('.pc-header-tabs-container', 3000);
         if (shouldRestart) continue;
 
         clickIKnow();
-        const tabs = getTabs();
+        const allTabs = getTabs();
+        const currentJob = jobs[idx];
+        
+        let targetTabs = allTabs;
+        if (allTabs.length > 0) {
+            const indices = parseIndices(currentJob.targetTabStr, allTabs.length);
+            targetTabs = indices.map(i => allTabs[i]).filter(Boolean);
+            if(targetTabs.length === 0) {
+                 addLog(`⚠️ 没有匹配的 Tab 序号，跳过当前目录`);
+                 continue;
+            }
+        }
 
-        if (tabs.length > 0) {
-          const tabTime = perStepTime / tabs.length;
-          for (let t = 0; t < tabs.length; t++) {
+        let tabTime = perStepTime;
+        
+        if (targetTabs.length > 0) {
+          tabTime = perStepTime / targetTabs.length;
+          for (let t = 0; t < targetTabs.length; t++) {
             if (shouldRestart) break;
             await waitWhilePaused();
             if (shouldRestart || !isRunning) break;
             clickIKnow();
-            addLog(`📑 Tab[${t + 1}/${tabs.length}]: ${tabs[t].name}`);
-            if (tabs[t].element && tabs.length > 1 && !isTabActive(tabs[t])) { clickIKnow(); safeClick(tabs[t].element); clickIKnow(); }
+            const originalIndex = allTabs.indexOf(targetTabs[t]);
+            addLog(`📑 正在刷 Tab[${originalIndex + 1}]: ${targetTabs[t].name}`);
+            
+            if (targetTabs[t].element && allTabs.length > 1 && !isTabActive(targetTabs[t])) { 
+                clickIKnow(); safeClick(targetTabs[t].element); clickIKnow(); 
+            }
+            if (shouldRestart) break;
+            await new Promise((r) => setTimeout(r, 2000));
             if (shouldRestart) break;
             clickIKnow();
             await waitForElement('.pc-header-tasks-row', 3000);
             if (shouldRestart) break;
+            
             let videoPlayed = false;
             if (videoPlaybackEnabled) {
               addLog('🎬 等待视频播放结束...');
@@ -1416,15 +1539,26 @@ function createControlPanel() {
               }
             }
             clickIKnow();
-            const tabTasks = getTasks();
-            if (tabTasks.length > 0) {
-              const taskTime = tabTime / tabTasks.length;
-              for (let k = 0; k < tabTasks.length; k++) {
+            
+            const allTasks = getTasks();
+            let targetTasks = allTasks;
+            if (allTasks.length > 0) {
+                const indices = parseIndices(currentJob.targetTaskStr, allTasks.length);
+                targetTasks = indices.map(i => allTasks[i]).filter(Boolean);
+            }
+            
+            if (targetTasks.length > 0) {
+              const taskTime = tabTime / targetTasks.length;
+              for (let k = 0; k < targetTasks.length; k++) {
                 if (shouldRestart) break;
                 await waitWhilePaused();
                 if (shouldRestart || !isRunning) break;
-                const taskName = `✏️ Task[${k + 1}/${tabTasks.length}]: ${tabTasks[k].name}`;
-                if (tabTasks[k].element && tabTasks.length > 1 && !isTaskActive(tabTasks[k])) { clickIKnow(); tabTasks[k].element.click(); clickIKnow(); }
+                
+                const origTaskIndex = allTasks.indexOf(targetTasks[k]);
+                const taskName = `✏️ Task[${origTaskIndex + 1}]: ${targetTasks[k].name}`;
+                if (targetTasks[k].element && allTasks.length > 1 && !isTaskActive(targetTasks[k])) { 
+                    clickIKnow(); targetTasks[k].element.click(); clickIKnow(); 
+                }
                 await waitTime(taskTime, taskName);
                 if (shouldRestart) break;
                 clickIKnow();
@@ -1439,22 +1573,33 @@ function createControlPanel() {
           }
           if (shouldRestart) continue;
         } else {
-          const directTasks = getTasks();
-          if (directTasks.length > 0) {
-            const taskTime = perStepTime / directTasks.length;
-            for (let k = 0; k < directTasks.length; k++) {
+          // Fallback if no tabs found but tasks exist directly
+          const allTasks = getTasks();
+          let targetTasks = allTasks;
+          if (allTasks.length > 0) {
+              const indices = parseIndices(currentJob.targetTaskStr, allTasks.length);
+              targetTasks = indices.map(i => allTasks[i]).filter(Boolean);
+          }
+
+          if (targetTasks.length > 0) {
+            const taskTime = tabTime / targetTasks.length;
+            for (let k = 0; k < targetTasks.length; k++) {
               if (shouldRestart) break;
               await waitWhilePaused();
               if (shouldRestart || !isRunning) break;
-              const taskName = `✏️ Task[${k + 1}/${directTasks.length}]: ${directTasks[k].name}`;
-              if (directTasks[k].element && directTasks.length > 1 && !isTaskActive(directTasks[k])) { clickIKnow(); directTasks[k].element.click(); clickIKnow(); }
+              
+              const origTaskIndex = allTasks.indexOf(targetTasks[k]);
+              const taskName = `✏️ Task[${origTaskIndex + 1}]: ${targetTasks[k].name}`;
+              if (targetTasks[k].element && allTasks.length > 1 && !isTaskActive(targetTasks[k])) { 
+                  clickIKnow(); targetTasks[k].element.click(); clickIKnow(); 
+              }
               await waitTime(taskTime, taskName);
               if (shouldRestart) break;
               clickIKnow();
             }
             if (shouldRestart) continue;
           } else {
-            await waitTime(perStepTime, '');
+            await waitTime(tabTime, '');
             if (shouldRestart) continue;
             clickIKnow();
           }
