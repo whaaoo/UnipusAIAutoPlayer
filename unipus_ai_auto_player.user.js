@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.2.12
+// @version      5.2.13
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -1064,7 +1064,7 @@ function createControlPanel() {
   const mkEl = (tag, style = '') => { const el = document.createElement(tag); el.style.cssText = style; return el; };
 
   let title = mkDiv('font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;');
-  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.12</span>';
+  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.13</span>';
 
   let authorInfo = mkDiv('display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;');
   let authorText = mkEl('p', 'margin:0;font-size:12px;color:rgba(255,255,255,0.9);');
