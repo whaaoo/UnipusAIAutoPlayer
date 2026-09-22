@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         U校园AI自动刷时长工具
-// @version      5.2.13
+// @version      5.2.14
 // @description  新视野大学英语自动识别目录、自动翻页、分配课时,高效刷课工具
 // @author       uxudjs
 // @match        https://ucontent.unipus.cn/*
@@ -20,31 +20,91 @@
 'use strict';
 
 const IS_IFRAME = window.self !== window.top;
-const IS_IPUB   = location.hostname.includes('ipub.unipus.cn');
-const IS_UCONTENT = location.hostname.includes('ucontent.unipus.cn');
+const IS_IPUB = location.hostname === 'ipub.unipus.cn';
+const TRUSTED_ORIGINS = new Set(['https://ucontent.unipus.cn', 'https://ipub.unipus.cn']);
+
+function isTrustedMessage(event, source) {
+  return !!source && event.source === source && TRUSTED_ORIGINS.has(event.origin) &&
+    !!event.data && typeof event.data === 'object';
+}
+
+function parseRanges(inputStr) {
+  const input = String(inputStr || '').trim();
+  if (!input) return [];
+  if (input.length > 1000) throw new Error('序号输入过长');
+  return input.split(/[,，]/).map((part) => {
+    const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!match) throw new Error('序号请使用正整数或范围，例如 1,3 或 1-3');
+    const start = Number(match[1]);
+    const end = Number(match[2] || match[1]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) {
+      throw new Error('序号必须为正整数，范围起点不能大于终点');
+    }
+    return [start, end];
+  });
+}
 
 function parseIndices(inputStr, maxLen) {
-  if (!inputStr || !inputStr.trim()) {
+  if (!Number.isSafeInteger(maxLen) || maxLen < 0) throw new Error('无效的项目数量');
+  const ranges = parseRanges(inputStr);
+  if (!ranges.length) {
     return Array.from({length: maxLen}, (_, i) => i);
   }
-  const parts = inputStr.split(',');
   const indices = new Set();
-  for (const p of parts) {
-    if (p.includes('-')) {
-      const [start, end] = p.split('-').map(Number);
-      if (!isNaN(start) && !isNaN(end)) {
-        for (let i = start; i <= end; i++) {
-          if (i >= 1 && i <= maxLen) indices.add(i - 1);
-        }
-      }
-    } else {
-      const val = Number(p);
-      if (!isNaN(val) && val >= 1 && val <= maxLen) {
-        indices.add(val - 1);
-      }
-    }
+  for (const [start, end] of ranges) {
+    for (let i = start; i <= Math.min(end, maxLen); i++) indices.add(i - 1);
   }
   return Array.from(indices).sort((a, b) => a - b);
+}
+
+function menuKey(item) {
+  return JSON.stringify([item.unit, item.section, item.micro]);
+}
+
+function menuKeys(list) {
+  const counts = new Map();
+  return list.map((item) => {
+    const key = menuKey(item);
+    const occurrence = counts.get(key) || 0;
+    counts.set(key, occurrence + 1);
+    return JSON.stringify([key, occurrence]);
+  });
+}
+
+function buildPlan(minutes, jobs) {
+  if (!Number.isFinite(minutes) || minutes < 1 || !Number.isFinite(minutes * 60)) {
+    throw new Error('总时长必须是至少 1 分钟的有限数字');
+  }
+  if (!jobs.length) throw new Error('请至少勾选一个目录');
+  const plannedJobs = jobs.map((job) => {
+    parseRanges(job.targetTabStr);
+    parseRanges(job.targetTaskStr);
+    return { ...job };
+  });
+  return {
+    jobs: plannedJobs,
+    minutes,
+    perStepTime: minutes * 60 / jobs.length,
+    signature: JSON.stringify([minutes, plannedJobs.map((job) =>
+      [menuKey(job), job.occurrence || 0, job.targetTabStr.trim(), job.targetTaskStr.trim()])]),
+  };
+}
+
+function clickElementOnce(el) {
+  // nodeType works for elements from same-origin iframe realms as well.
+  if (!el || el.nodeType !== 1 || !el.isConnected || el.disabled ||
+      el.getAttribute('aria-disabled') === 'true') return false;
+  try {
+    el.scrollIntoView?.({ block: 'center', inline: 'center' });
+  } catch (_) {}
+  try {
+    if (typeof el.click === 'function') el.click();
+    else {
+      const view = el.ownerDocument.defaultView;
+      el.dispatchEvent(new view.MouseEvent('click', { bubbles: true, cancelable: true, view }));
+    }
+    return true;
+  } catch (_) { return false; }
 }
 
 const safeText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
@@ -85,31 +145,13 @@ const pickClickable = (root) => {
 };
 
 function clickIKnow() {
-  const sels = [
-    '.know-box .iKnow',
-    '.ant-modal-confirm-btns .ant-btn-primary.system-info-cloud-ok-button',
-    '.ant-modal-confirm-btns .ant-btn.ant-btn-primary',
-    '.ipublish-modal-footer-ok',
-    'button.ant-btn.ant-btn-default.ipublish-modal-footer-ok'
-  ];
-  sels.forEach((sel) => {
-    try {
-      const btns = document.querySelectorAll(sel);
-      btns.forEach((btn) => {
-          if (btn && typeof btn.click === 'function') btn.click();
-      });
-    } catch (e) {}
+  // Only known informational notices; generic confirmation buttons may submit work.
+  const selector = '.know-box .iKnow, .ant-modal-confirm-info .system-info-cloud-ok-button';
+  document.querySelectorAll(selector).forEach((button) => {
+    if (button.getClientRects().length && button.getAttribute('aria-hidden') !== 'true') {
+      clickElementOnce(button);
+    }
   });
-  // 通用文本匹配：查找包含"确认"/"确定"文字的可见按钮
-  try {
-    const allBtns = document.querySelectorAll('button, .btn, a[role="button"], span[role="button"]');
-    allBtns.forEach((btn) => {
-      const text = (btn.textContent || btn.innerText || '').trim();
-      if ((text.includes('确认') || text.includes('确定')) && btn.offsetParent !== null) {
-        try { if (typeof btn.click === 'function') btn.click(); } catch (e) {}
-      }
-    });
-  } catch (e) {}
 }
 
 function getMenuList(doc) {
@@ -393,369 +435,244 @@ function getMenuList(doc) {
 }
 
 if (IS_IFRAME || IS_IPUB) {
+  const targets = new Map();
+  const targetIds = new WeakMap();
+  let nextTargetId = 0;
+  let parentOrigin = 'https://ucontent.unipus.cn';
+  let parentRunning = false;
+  try {
+    const origin = new URL(document.referrer).origin;
+    if (TRUSTED_ORIGINS.has(origin)) parentOrigin = origin;
+  } catch (_) {}
+
   function serializeMenuList(nodes) {
-    return nodes.map((n, i) => {
-      let isId = false;
-      let path = '';
-      if (n.element) {
-         if (n.element.id) {
-             path = n.element.id;
-             isId = true;
-         } else {
-             const uid = 'uai-node-' + Date.now() + '-' + i;
-             n.element.id = uid;
-             path = uid;
-             isId = true;
-         }
-      }
-      return {
-        unit: n.unit,
-        section: n.section,
-        micro: n.micro,
-        path: path,
-        isId: isId
-      };
+    targets.clear();
+    return nodes.map((node) => {
+      if (!targetIds.has(node.element)) targetIds.set(node.element, `uai-target-${++nextTargetId}`);
+      const path = targetIds.get(node.element);
+      targets.set(path, node.element);
+      return { unit: node.unit, section: node.section, micro: node.micro, path };
     });
   }
 
-  function clickByPath(path, isId) {
-    if (!path) return false;
-    try {
-      if (isId || path.startsWith('uai-node-')) {
-         const el = document.getElementById(path);
-         if (el) return safeClickEl(el);
-      }
-      const el = document.querySelector(path);
-      if (el) return safeClickEl(el);
-      return false;
-    } catch (e) { return false; }
-  }
-
-  function safeClickEl(el) {
-    if (!el) return false;
-    try {
-      clickIKnow();
-      if (el.scrollIntoView) {
-        try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-      }
-      const opts = { bubbles: true, cancelable: true, view: window };
-      ['mouseover', 'mousedown', 'mouseup', 'click'].forEach((t) => {
-        try { el.dispatchEvent(new MouseEvent(t, opts)); } catch (e) {}
-      });
-      if (typeof el.click === 'function') el.click();
-      
-      const node = el.closest ? el.closest('.pc-slider-menu-node') : null;
-      if (node && node !== el) {
-        try { if (typeof node.click === 'function') node.click(); } catch (e) {}
-      }
-      const span = el.querySelector ? el.querySelector('span') : null;
-      if (span && span !== el) {
-        try { if (typeof span.click === 'function') span.click(); } catch (e) {}
-      }
-      setTimeout(clickIKnow, 500);
-      return true;
-    } catch (e) { return false; }
-  }
-
   function sendMenuToParent(nodes) {
-    if (!nodes.length) return;
-    const serialized = serializeMenuList(nodes);
-    try {
-      window.parent.postMessage(
-        { type: 'UAI_MENU_LIST', payload: serialized },
-        '*'
-      );
-    } catch (e) {}
+    window.parent.postMessage({ type: 'UAI_MENU_LIST', payload: serializeMenuList(nodes) }, parentOrigin);
   }
 
   function scanAndSend() {
     const list = getMenuList(document);
-    if (list.length > 0) {
-      sendMenuToParent(list);
-      return true;
-    }
-    return false;
+    sendMenuToParent(list);
+    return list.length > 0;
   }
 
-  window.addEventListener('message', (e) => {
-    if (!e.data || e.data.type !== 'UAI_CMD') return;
-    const { cmd, path } = e.data;
-    if (cmd === 'CLICK') {
-      const ok = clickByPath(path, e.data.isId);
-      try {
-        window.parent.postMessage({ type: 'UAI_CLICK_RESULT', ok }, '*');
-      } catch (_) {}
+  window.addEventListener('message', (event) => {
+    if (!isTrustedMessage(event, window.parent) || event.data.type !== 'UAI_CMD') return;
+    parentOrigin = event.origin;
+    const { cmd, path, requestId } = event.data;
+    if (cmd === 'CLICK' && typeof requestId === 'string' && requestId.length <= 100) {
+      // Only targets returned by a menu scan are remotely clickable.
+      const ok = typeof path === 'string' && clickElementOnce(targets.get(path));
+      window.parent.postMessage({ type: 'UAI_CLICK_RESULT', requestId, ok }, event.origin);
     } else if (cmd === 'SCAN') {
       scanAndSend();
-    } else if (cmd === 'PING') {
-      try { window.parent.postMessage({ type: 'UAI_PONG' }, '*'); } catch (_) {}
+    } else if (cmd === 'STATE') {
+      parentRunning = event.data.running === true && event.data.paused === false;
     }
   });
 
-  setInterval(clickIKnow, 1000);
+  setInterval(() => { if (parentRunning) clickIKnow(); }, 1000);
   function startIframeScan() {
     if (scanAndSend()) return;
     let fired = false;
-    const menuSelectors =
-      '.pc-slider-menu-unit, .pc-slider-menu-node, .pc-slider-menu-micro, ' +
-      '.ant-tree-treenode, [role="treeitem"], [class*="tree-menu"], [role="menuitem"], ' +
-      '.menu--u3menu-3Xu4h';
-    const ob = new MutationObserver(() => {
-      if (fired) return;
-      if (scanAndSend()) {
-        fired = true;
-        ob.disconnect();
-      }
+    const observer = new MutationObserver(() => {
+      if (!fired && scanAndSend()) { fired = true; observer.disconnect(); }
     });
-    ob.observe(document.body || document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
-    setTimeout(() => ob.disconnect(), 30000);
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    setTimeout(() => observer.disconnect(), 30000);
     let retries = 0;
     const retry = setInterval(() => {
-      retries++;
-      if (retries > 20 || fired) { clearInterval(retry); return; }
-      if (scanAndSend()) { fired = true; clearInterval(retry); ob.disconnect(); }
+      if (++retries > 20 || fired) { clearInterval(retry); return; }
+      if (scanAndSend()) { fired = true; clearInterval(retry); observer.disconnect(); }
     }, 1500);
   }
-
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(startIframeScan, 600));
+    document.addEventListener('DOMContentLoaded', () => setTimeout(startIframeScan, 600), { once: true });
   } else {
     setTimeout(startIframeScan, 600);
   }
-
-  return; 
+  return;
 }
 
 let isPaused = false;
 let isRunning = false;
-let lastTimeValue = 60;
-let lastStartIdx = 0;
-let perStepTime = 0;
 let shouldRestart = false;
 let videoPlaybackEnabled = false;
-
+let activeVideoSession = null;
 let _menuListCache = [];
-let _clickResolve = null;
+const pendingClicks = new Map();
+let nextRequestId = 0;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function findVideoElement() {
-  const vjsVideo = document.querySelector('video.vjs-tech');
-  if (vjsVideo) return vjsVideo;
-  const video = document.querySelector('video');
+  const video = document.querySelector('video.vjs-tech') || document.querySelector('video');
   if (video) return video;
   try {
-    const iw = getIframeWin();
-    if (iw && iw.document) {
-      const iframeVideo = iw.document.querySelector('video.vjs-tech') || iw.document.querySelector('video');
-      if (iframeVideo) return iframeVideo;
-    }
-  } catch (e) {}
-  return null;
+    const doc = getIframeWin()?.document;
+    return doc?.querySelector('video.vjs-tech') || doc?.querySelector('video') || null;
+  } catch (_) { return null; }
 }
 
-function playVideo() {
-  const video = findVideoElement();
-  if (!video) return;
-  if (!video.paused) return;
-  if (video.ended) return;
+function canPlayVideo() {
+  return isRunning && !isPaused && !shouldRestart && videoPlaybackEnabled;
+}
 
-  // 移除平台禁用的控件类，恢复播放能力
-  const vjsContainer = video.closest('.video-js');
-  if (vjsContainer) {
-    vjsContainer.classList.remove('vjs-controls-disabled');
-    vjsContainer.querySelectorAll('.vjs-controls-disabled').forEach(function (el) {
-      el.classList.remove('vjs-controls-disabled');
-    });
-  }
-
-  // 先尝试静音播放（绕开浏览器自动播放限制）
-  video.muted = true;
+async function playVideo(video, session) {
+  if (!canPlayVideo() || session.done || !video.paused || video.ended || session.starting) return;
+  session.starting = true;
   try {
-    var promise = video.play();
-    if (promise) {
-      promise.then(function () {
-        video.muted = false;
-      }).catch(function () {});
-    } else {
-      video.muted = false;
+    try {
+      await video.play();
+    } catch (_) {
+      if (!canPlayVideo() || session.done) return;
+      video.muted = true;
+      await video.play();
     }
-  } catch (e) {}
-
-  // 降级：点击 Video.js 大播放按钮
-  var bigBtn = document.querySelector('.vjs-big-play-button');
-  if (bigBtn) {
-    try { bigBtn.click(); } catch (e) {}
+  } catch (_) {
+    // The bounded progress timeout reports autoplay or media failures to the UI.
+  } finally {
+    session.starting = false;
+    if (session.done || !canPlayVideo()) video.pause();
+    if (session.done) video.muted = session.originalMuted;
   }
-
-  // 再降级：点击控制栏播放按钮
-  var playBtn = document.querySelector('.vjs-play-control');
-  if (playBtn) {
-    try { playBtn.click(); } catch (e) {}
-  }
-
-  // 启动保活：对抗平台自动暂停
-  if (window._uaiPlayKeepAlive) clearInterval(window._uaiPlayKeepAlive);
-  window._uaiPlayKeepAlive = setInterval(function () {
-    var v = findVideoElement();
-    if (!v || v.ended || shouldRestart || !isRunning) {
-      clearInterval(window._uaiPlayKeepAlive);
-      window._uaiPlayKeepAlive = null;
-      return;
-    }
-    if (v.paused) {
-      v.muted = true;
-      try { v.play(); } catch (e) {}
-    }
-  }, 1000);
 }
 
-function isVideoPlaying(video) {
-  if (!video) return false;
-  return !video.paused && !video.ended && video.readyState > 2;
+function syncPlaybackState() {
+  activeVideoSession?.sync();
+  sendToIframe({ type: 'UAI_CMD', cmd: 'STATE', running: isRunning, paused: isPaused || shouldRestart });
 }
 
 function waitForVideoEnd() {
-  return new Promise((resolve) => {
-    const video = findVideoElement();
-    if (!video) { resolve(false); return; }
-    if (video.ended) { resolve(false); return; }
-    let done = false;
-    let videoPlayed = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearInterval(stateCheck);
-      if (window._uaiPlayKeepAlive) {
-        clearInterval(window._uaiPlayKeepAlive);
-        window._uaiPlayKeepAlive = null;
-      }
+  const video = findVideoElement();
+  if (!video) return Promise.resolve('absent');
+  if (!videoPlaybackEnabled) return Promise.resolve('disabled');
+  if (video.ended) return Promise.resolve('ended');
+  if (activeVideoSession) return activeVideoSession.promise;
+  const session = { video, done: false, starting: false, originalMuted: video.muted };
+  session.promise = new Promise((resolve, reject) => {
+    let timer;
+    let lastTick = performance.now();
+    let wasActive = false;
+    let elapsed = 0;
+    let stalled = 0;
+    let lastPosition = video.currentTime;
+    const finish = (status, error) => {
+      if (session.done) return;
+      session.done = true;
+      clearInterval(timer);
       video.removeEventListener('ended', onEnded);
-      resolve(videoPlayed);
+      video.removeEventListener('error', onError);
+      if (status !== 'ended') video.pause();
+      video.muted = session.originalMuted;
+      if (activeVideoSession === session) activeVideoSession = null;
+      if (error) reject(error); else resolve(status);
     };
-    const onEnded = () => { videoPlayed = true; finish(); };
+    const onEnded = () => finish('ended');
+    const onError = () => finish('error', new Error('视频加载或播放失败，请检查页面后重试'));
+    session.sync = () => {
+      if (session.done) return;
+      const now = performance.now();
+      if (wasActive) { elapsed += now - lastTick; stalled += now - lastTick; }
+      lastTick = now;
+      wasActive = canPlayVideo();
+      if (!isRunning || shouldRestart) { finish('cancelled'); return; }
+      if (!videoPlaybackEnabled) { finish('disabled'); return; }
+      if (findVideoElement() !== video || !video.isConnected) { finish('replaced'); return; }
+      if (video.error) { onError(); return; }
+      if (video.ended) { onEnded(); return; }
+      if (isPaused) { video.pause(); return; }
+      if (video.currentTime !== lastPosition) { lastPosition = video.currentTime; stalled = 0; }
+      if (elapsed >= 30 * 60 * 1000 || stalled >= 60 * 1000) {
+        finish('timeout', new Error('视频等待超时或超过 60 秒无播放进度，请检查视频后重试'));
+        return;
+      }
+      void playVideo(video, session);
+    };
     video.addEventListener('ended', onEnded);
-    // 定期检查脚本暂停/重启状态，以及视频是否被移除
-    const stateCheck = setInterval(() => {
-      if (shouldRestart || !isRunning) { finish(); return; }
-      if (!findVideoElement()) { finish(); return; }
-    }, 1000);
-    // 延迟播放：等页面渲染稳定后再启动视频
-    setTimeout(function () {
-      if (!done) playVideo();
-    }, 800);
-    setTimeout(function () { videoPlayed = true; finish(); }, 30 * 60 * 1000);
+    video.addEventListener('error', onError);
+    timer = setInterval(session.sync, 250);
   });
+  activeVideoSession = session;
+  session.sync();
+  return session.promise;
+}
+
+function getIframeTarget() {
+  const iframe = document.getElementById('ipublish-pc-book-easy-iframe') ||
+    document.querySelector('iframe.ipublish-pc-iframe-container') ||
+    document.querySelector('iframe[id*="iframe"]') || document.querySelector('iframe');
+  if (!iframe?.contentWindow) return null;
+  try {
+    const origin = new URL(iframe.getAttribute('src') || location.href, location.href).origin;
+    return TRUSTED_ORIGINS.has(origin) ? { win: iframe.contentWindow, origin } : null;
+  } catch (_) { return null; }
 }
 
 function getIframeWin() {
-  try {
-    const iframe =
-      document.getElementById('ipublish-pc-book-easy-iframe') ||
-      document.querySelector('iframe.ipublish-pc-iframe-container') ||
-      document.querySelector('iframe[id*="iframe"]') ||
-      document.querySelector('iframe');
-    return iframe ? iframe.contentWindow : null;
-  } catch (e) { return null; }
+  return getIframeTarget()?.win || null;
 }
 
 function sendToIframe(data) {
-  const iw = getIframeWin();
-  if (iw) {
-    try { iw.postMessage(data, '*'); return true; } catch (e) {}
-  }
-  return false;
+  const target = getIframeTarget();
+  if (!target) return false;
+  try { target.win.postMessage(data, target.origin); return true; } catch (_) { return false; }
 }
 
-window.addEventListener('message', (e) => {
-  if (!e.data) return;
-  const { type, payload, ok } = e.data;
-
-  if (type === 'UAI_MENU_LIST' && Array.isArray(payload) && payload.length > 0) {
-    _menuListCache = payload.map((n) => ({
-      unit: n.unit,
-      section: n.section,
-      micro: n.micro,
-      element: { _iframePath: n.path, _isId: n.isId }, 
+window.addEventListener('message', (event) => {
+  const target = getIframeTarget();
+  if (!target || !isTrustedMessage(event, target.win) || event.origin !== target.origin) return;
+  const { type, payload, ok, requestId } = event.data;
+  if (type === 'UAI_MENU_LIST' && Array.isArray(payload) && payload.length <= 10000) {
+    if (!payload.every((node) => node && ['unit', 'section', 'micro', 'path'].every((key) =>
+      typeof node[key] === 'string' && node[key].length <= 2000) && node.micro && node.path)) return;
+    _menuListCache = payload.map((node) => ({
+      unit: node.unit, section: node.section, micro: node.micro,
+      element: { _iframePath: node.path },
     }));
-    const ev = new CustomEvent('UAI_MENU_READY', { detail: _menuListCache });
-    window.dispatchEvent(ev);
-  }
-
-  if (type === 'UAI_CLICK_RESULT') {
-    if (_clickResolve) {
-      _clickResolve(!!ok);
-      _clickResolve = null;
-    }
-  }
-
-  if (type === 'UAI_PONG') {
+    window.dispatchEvent(new CustomEvent('UAI_MENU_READY', { detail: _menuListCache }));
+    sendToIframe({ type: 'UAI_CMD', cmd: 'STATE', running: isRunning, paused: isPaused || shouldRestart });
+  } else if (type === 'UAI_CLICK_RESULT' && typeof requestId === 'string' && typeof ok === 'boolean') {
+    const pending = pendingClicks.get(requestId);
+    if (pending && pending.source === event.source && pending.origin === event.origin) pending.finish(ok);
   }
 });
 
 function safeClick(target) {
-  try {
-    if (!target) return false;
-    clickIKnow();
-    if (target._iframePath && !(target instanceof Element)) {
-      return false;
-    }
-
-    const el = target instanceof Element ? target : null;
-    if (!el) return false;
-
-    if (el.scrollIntoView) {
-      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-    }
-    const dispatch = (node) => {
-      if (!node || !(node instanceof Element)) return;
-      const opts = { bubbles: true, cancelable: true, view: window };
-      ['mouseover', 'mousedown', 'mouseup', 'click'].forEach((t) => {
-        try { node.dispatchEvent(new MouseEvent(t, opts)); } catch (e) {}
-      });
-    };
-
-    try { if (typeof el.click === 'function') el.click(); dispatch(el); } catch (e) {}
-
-    const node = el.closest ? el.closest('.pc-slider-menu-node') : null;
-    if (node && node !== el) {
-      try { if (typeof node.click === 'function') node.click(); dispatch(node); } catch (e) {}
-      const span = node.querySelector ? node.querySelector('span') : null;
-      if (span && span !== el) {
-        try { if (typeof span.click === 'function') span.click(); dispatch(span); } catch (e) {}
-      }
-    }
-    setTimeout(clickIKnow, 500);
-    return true;
-  } catch (e) { return false; }
+  clickIKnow();
+  return clickElementOnce(target);
 }
 
 function safeClickAsync(target) {
+  if (!target?._iframePath) return Promise.resolve(safeClick(target));
+  const frame = getIframeTarget();
+  if (!frame) return Promise.resolve(false);
   return new Promise((resolve) => {
-    if (!target) { resolve(false); return; }
-
-    if (target._iframePath && !(target instanceof Element)) {
-      const ok = sendToIframe({ type: 'UAI_CMD', cmd: 'CLICK', path: target._iframePath, isId: target._isId });
-      if (!ok) { resolve(false); return; }
-
-      _clickResolve = resolve;
-      setTimeout(() => {
-        if (_clickResolve === resolve) {
-          _clickResolve = null;
-          resolve(false);
-        }
-      }, 3000);
-    } else {
-      resolve(safeClick(target));
-    }
+    const requestId = `click-${Date.now()}-${++nextRequestId}`;
+    const finish = (ok) => {
+      clearTimeout(timer);
+      pendingClicks.delete(requestId);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 3000);
+    pendingClicks.set(requestId, { finish, source: frame.win, origin: frame.origin });
+    try {
+      frame.win.postMessage({ type: 'UAI_CMD', cmd: 'CLICK', path: target._iframePath, requestId }, frame.origin);
+    } catch (_) { finish(false); }
   });
 }
 
 function getMenuList_main() {
   const localList = getMenuList(document);
   if (localList.length > 0) return localList;
-  if (_menuListCache.length > 0) return _menuListCache;
   try {
     const iw = getIframeWin();
     if (iw && iw.document) {
@@ -763,84 +680,46 @@ function getMenuList_main() {
       if (iframeList.length > 0) return iframeList;
     }
   } catch (e) {}
-  return [];
+  return _menuListCache;
 }
 
 function requestIframeScan() {
   sendToIframe({ type: 'UAI_CMD', cmd: 'SCAN' });
 }
 
-function waitForElement(selector, timeout = 3000) {
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-    let tick = 0;
-    const check = setInterval(() => {
-      if (++tick % 5 === 0) clickIKnow();
-      if (shouldRestart) { clearInterval(check); resolve(null); return; }
-      const el = document.querySelector(selector);
-      if (el || Date.now() - startTime > timeout) {
-        clearInterval(check);
-        resolve(el);
-      }
-    }, 100);
-  });
-}
-
-function getMenuListWithRetry(maxRetries, intervalMs, onSuccess, onFail) {
-  let retries = 0;
-  function attempt() {
-    clickIKnow();
-    const list = getMenuList_main();
-    if (list && list.length > 0) {
-      if (onSuccess) onSuccess(list);
-      return;
-    }
-    requestIframeScan();
-    retries++;
-    if (retries < maxRetries) {
-      setTimeout(attempt, intervalMs);
-    } else {
-      if (onFail) onFail();
-    }
+async function waitForElement(selector, timeout = 3000) {
+  const start = performance.now();
+  while (isRunning && !shouldRestart) {
+    if (!await checkpoint()) return null;
+    const element = document.querySelector(selector);
+    if (element || performance.now() - start >= timeout) return element;
+    await sleep(100);
   }
-  attempt();
+  return null;
 }
 
-function watchForMenu(callback, timeout) {
-  timeout = timeout || 20000;
-  let timer, fired = false;
-  const menuSelectors =
-    '.pc-slider-menu-unit, .pc-slider-menu-node, .pc-slider-menu-micro, ' +
-    '.ant-tree-treenode, [role="treeitem"], [class*="tree-menu"], [role="menuitem"], ' +
-    '.menu--u3menu-3Xu4h';
-
-  const observer = new MutationObserver((mutations) => {
-    if (fired) return;
-    for (const m of mutations) {
-      for (const node of m.addedNodes) {
-        if (node.nodeType !== 1) continue;
-        if ((node.matches && node.matches(menuSelectors)) ||
-            (node.querySelectorAll && node.querySelectorAll(menuSelectors).length > 0)) {
-          fired = true;
-          clearTimeout(timer);
-          observer.disconnect();
-          callback();
-          return;
-        }
-      }
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-  timer = setTimeout(() => { if (!fired) observer.disconnect(); }, timeout);
-
-  window.addEventListener('UAI_MENU_READY', function onReady() {
-    if (fired) return;
-    fired = true;
-    clearTimeout(timer);
+function detectMenu(onSuccess, onFail, timeout = 20000) {
+  let stopped = false;
+  const cleanup = () => {
+    stopped = true;
+    clearInterval(retry);
+    clearTimeout(deadline);
     observer.disconnect();
-    window.removeEventListener('UAI_MENU_READY', onReady);
-    callback();
-  }, { once: false });
+    window.removeEventListener('UAI_MENU_READY', check);
+  };
+  const check = () => {
+    if (stopped) return;
+    const list = getMenuList_main();
+    if (list.length) { cleanup(); onSuccess(list); }
+  };
+  const observer = new MutationObserver(check);
+  observer.observe(document.body, { childList: true, subtree: true });
+  const retry = setInterval(() => { requestIframeScan(); check(); }, 1200);
+  const deadline = setTimeout(() => { cleanup(); onFail(); }, timeout);
+  window.addEventListener('UAI_MENU_READY', check);
+  requestIframeScan();
+  check();
+  return cleanup;
 }
 
 function getTabs() {
@@ -905,10 +784,11 @@ function addLog(message, isCountdown = false) {
     div.textContent = message;
     log.appendChild(div);
   }
+  while (log.childElementCount > 300) log.firstElementChild.remove();
   log.scrollTop = log.scrollHeight;
 }
 
-// 反馈弹窗：下载页面源代码 + 提交 Issue
+// 反馈弹窗：仅导出诊断计数，不包含页面正文或账号信息
 function showFeedbackPopup(title) {
   // 防重复：移除已有弹窗
   var existing = document.getElementById('unipus-feedback-overlay');
@@ -944,7 +824,7 @@ function showFeedbackPopup(title) {
   var desc = document.createElement('div');
   desc.style.cssText =
     'font-size:13px;color:#666;margin-bottom:20px;text-align:center;line-height:1.6;';
-  desc.textContent = '请下载页面源代码并提交到 GitHub Issue，帮助作者适配此页面';
+  desc.textContent = '可下载不含页面正文、账号和链接参数的诊断摘要，检查后附到 GitHub Issue。需要页面结构时请另行脱敏。';
 
   // 按钮容器
   var btns = document.createElement('div');
@@ -952,20 +832,30 @@ function showFeedbackPopup(title) {
 
   // 下载按钮
   var downloadBtn = document.createElement('button');
-  downloadBtn.textContent = '📥 下载页面源代码';
+  downloadBtn.textContent = '📥 下载诊断摘要';
   downloadBtn.style.cssText =
     'flex:1;padding:12px;background:linear-gradient(135deg,#0ea5e9 0%,#10b981 100%);' +
     'color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;';
   downloadBtn.addEventListener('click', function () {
-    var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-    var blob = new Blob([html], { type: 'text/html;charset=UTF-8' });
+    const diagnostics = {
+      version: '5.2.14',
+      host: location.hostname,
+      menuItems: getMenuList_main().length,
+      tabs: getTabs().length,
+      tasks: getTasks().length,
+      iframePresent: !!getIframeWin(),
+      videoPresent: !!findVideoElement(),
+      running: isRunning,
+      paused: isPaused,
+    };
+    var blob = new Blob([JSON.stringify(diagnostics, null, 2)], { type: 'application/json;charset=UTF-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'unipus-page-source-' + Date.now() + '.html';
+    a.download = 'unipus-diagnostics-' + Date.now() + '.json';
     a.click();
-    URL.revokeObjectURL(url);
-    addLog('✅ 页面源代码已下载');
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    addLog('✅ 诊断摘要已下载，请检查后再提交');
   });
 
   // Issue 按钮
@@ -1055,7 +945,7 @@ function createControlPanel() {
   let panel = document.createElement('div');
   panel.id = 'unipus-panel';
   panel.style.cssText =
-    'position:fixed;right:20px;bottom:90px;width:380px;' +
+    'position:fixed;right:20px;bottom:90px;width:380px;max-width:calc(100vw - 40px);box-sizing:border-box;' +
     'background:linear-gradient(135deg,#0ea5e9 0%,#10b981 100%);' +
     'border:none;box-shadow:0 8px 32px rgba(0,0,0,0.3);border-radius:16px;' +
     'z-index:99999;font-family:sans-serif;padding:20px;display:block;';
@@ -1064,7 +954,7 @@ function createControlPanel() {
   const mkEl = (tag, style = '') => { const el = document.createElement(tag); el.style.cssText = style; return el; };
 
   let title = mkDiv('font-size:18px;font-weight:bold;color:#fff;margin-bottom:8px;text-align:center;');
-  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.13</span>';
+  title.innerHTML = '📚 U校园AI自动刷时长工具 <span style="font-size:12px;opacity:0.7;">v5.2.14</span>';
 
   let authorInfo = mkDiv('display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;padding-bottom:2px;');
   let authorText = mkEl('p', 'margin:0;font-size:12px;color:rgba(255,255,255,0.9);');
@@ -1087,7 +977,7 @@ function createControlPanel() {
 
   let menuList = [];
   let menuLabel = mkEl('label', 'display:block;margin-bottom:8px;font-size:14px;font-weight:600;color:#333;');
-  menuLabel.innerHTML = '📖 选择起始目录:';
+  menuLabel.innerHTML = '📖 选择目标目录:';
 
   let menuRow = mkDiv('display:flex;gap:8px;margin-bottom:15px;');
 
@@ -1099,7 +989,7 @@ function createControlPanel() {
     'font-size:13px;background:#fff;cursor:pointer;overflow:hidden;text-overflow:ellipsis;' +
     'white-space:nowrap;position:relative;box-sizing:border-box;'
   );
-  menuTrigger.textContent = '请选择起始目录';
+  menuTrigger.textContent = '请选择目标目录';
 
   let menuArrow = mkEl('span', 'position:absolute;right:8px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:10px;color:#999;');
   menuArrow.textContent = '▼';
@@ -1139,6 +1029,7 @@ function createControlPanel() {
   let startBtn; 
   let _lastMenuHash = '';  
   let _menuDetectionDone = false;  
+  const menuSelections = new Map();
 
   function updateMenuTriggerText() {
     const checked = menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked');
@@ -1147,25 +1038,37 @@ function createControlPanel() {
     } else {
       menuTrigger.textContent = `已选择 ${checked.length} 个目录`;
     }
+    menuTrigger.appendChild(menuArrow);
   }
 
   function populateMenuSelect(list) {
+    const previousKeys = menuKeys(menuList);
+    menuDropdown.querySelectorAll('.unipus-dir-checkbox').forEach((cb) => {
+      const index = Number(cb.dataset.index);
+      menuSelections.set(previousKeys[index], {
+        checked: cb.checked,
+        tab: menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${index}"]`).value,
+        task: menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${index}"]`).value,
+      });
+    });
     if (!Array.isArray(list) || list.length === 0) {
+      menuList = [];
       menuDropdown.innerHTML = '';
       const empty = mkDiv('padding:10px 12px;font-size:13px;color:#999;text-align:center;');
       empty.textContent = '未识别到目录，请展开左侧目录后重试';
       menuDropdown.appendChild(empty);
-      menuTrigger.textContent = '请选择起始目录';
+      menuTrigger.textContent = '请选择目标目录';
       _lastMenuHash = '';
       if (startBtn) { startBtn.disabled = true; startBtn.style.opacity = '0.5'; startBtn.style.cursor = 'not-allowed'; }
-      if (_menuDetectionDone) { showFeedbackPopup('目录识别失败'); }
       return;
     }
-    const newHash = JSON.stringify(list.map(function (n) { return n.unit + '|' + n.section + '|' + n.micro; }));
+    const newHash = JSON.stringify(menuKeys(list));
+    // Refresh element references even if the visible menu labels did not change.
+    menuList = list;
     if (newHash === _lastMenuHash) return;
     _lastMenuHash = newHash;
     menuDropdown.innerHTML = '';
-    menuList = list;
+    const keys = menuKeys(list);
 
     const actionRow = mkDiv('display:flex;padding:8px;border-bottom:1px solid #e0e0e0;background:#f9f9f9;position:sticky;top:0;z-index:1;');
     const selectAllBtn = mkEl('button', 'flex:1;margin-right:4px;padding:4px;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:4px;background:#fff;');
@@ -1189,6 +1092,7 @@ function createControlPanel() {
 
     let prevUnit = '';
     list.forEach((item, i) => {
+      const saved = menuSelections.get(keys[i]);
       if (item.unit && item.unit !== prevUnit) {
         prevUnit = item.unit;
         const header = mkDiv('padding:6px 12px 2px;font-size:11px;font-weight:bold;color:#0ea5e9;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;' + (i > 0 ? 'border-top:1px solid #f0f0f0;' : ''));
@@ -1201,7 +1105,7 @@ function createControlPanel() {
       );
       const cb = mkEl('input', 'margin-right:8px;cursor:pointer;flex-shrink:0;');
       cb.type = 'checkbox';
-      cb.checked = true;
+      cb.checked = saved ? saved.checked : menuSelections.size === 0;
       cb.className = 'unipus-dir-checkbox';
       cb.dataset.index = i;
       
@@ -1219,6 +1123,7 @@ function createControlPanel() {
       const tTabInput = mkEl('input', 'width:60px;padding:2px 4px;font-size:11px;border:1px solid #ccc;border-radius:4px;');
       tTabInput.className = 'unipus-dir-tab-input';
       tTabInput.placeholder = '1,3 / 1-3';
+      tTabInput.value = saved?.tab || '';
       tTabInput.dataset.index = i;
       tTabInput.onclick = e => e.stopPropagation();
       tTabWrap.appendChild(tTabInput);
@@ -1230,12 +1135,14 @@ function createControlPanel() {
       const tTaskInput = mkEl('input', 'width:60px;padding:2px 4px;font-size:11px;border:1px solid #ccc;border-radius:4px;');
       tTaskInput.className = 'unipus-dir-task-input';
       tTaskInput.placeholder = '1,3 / 1-3';
+      tTaskInput.value = saved?.task || '';
       tTaskInput.dataset.index = i;
       tTaskInput.onclick = e => e.stopPropagation();
       tTaskWrap.appendChild(tTaskInput);
 
       detailDiv.appendChild(tTabWrap);
       detailDiv.appendChild(tTaskWrap);
+      detailDiv.style.display = cb.checked ? 'flex' : 'none';
 
       itemDiv.addEventListener('mouseenter', function () { this.style.background = '#e8f4fd'; });
       itemDiv.addEventListener('mouseleave', function () { this.style.background = ''; });
@@ -1278,6 +1185,7 @@ function createControlPanel() {
   videoLabelEl.textContent = '🎬 启用视频播放（等待视频结束后自动跳转，播放期间不计时）';
   videoCheckbox.addEventListener('change', function() {
     videoPlaybackEnabled = this.checked;
+    syncPlaybackState();
     addLog(videoPlaybackEnabled ? '🎬 已启用视频播放模式' : '⏱️ 已切换为纯倒计时模式');
   });
   videoRow.appendChild(videoCheckbox);
@@ -1296,6 +1204,11 @@ function createControlPanel() {
   );
   pauseBtn.innerHTML = '⏸️ 暂停';
 
+  const stopBtn = mkEl('button',
+    'padding:12px;background:#dc3545;color:#fff;border:0;border-radius:8px;cursor:pointer;display:none;'
+  );
+  stopBtn.textContent = '⏹️ 停止';
+
   let log = mkEl('div',
     'height:120px;overflow-y:auto;font-size:12px;border:2px solid #e0e0e0;' +
     'background:#f9f9f9;padding:10px;border-radius:8px;font-family:monospace;color:#555;'
@@ -1304,6 +1217,7 @@ function createControlPanel() {
 
   btnContainer.appendChild(startBtn);
   btnContainer.appendChild(pauseBtn);
+  btnContainer.appendChild(stopBtn);
   contentBox.appendChild(menuLabel);
   contentBox.appendChild(menuRow);
   contentBox.appendChild(timeLabel);
@@ -1318,43 +1232,28 @@ function createControlPanel() {
 
   populateMenuSelect([]);
 
+  let cancelMenuDetection = () => {};
   function initMenuDetection() {
-    if (_menuDetectionDone) return;  
+    cancelMenuDetection();
+    if (_menuDetectionDone) return;
     clickIKnow();
-    requestIframeScan();
-    const initialList = getMenuList_main();
-    if (initialList && initialList.length > 0) {
+    addLog('⏳ 正在检测目录...');
+    cancelMenuDetection = detectMenu((list) => {
       _menuDetectionDone = true;
-      populateMenuSelect(initialList);
-      return;
-    }
-    addLog('⏳ 正在等待目录加载...');
-    getMenuListWithRetry(15, 1200,
-      (list) => {
-        if (!_menuDetectionDone) {
-          _menuDetectionDone = true;
-          populateMenuSelect(list);
-        }
-      },
-      () => {
-        addLog('⚠️ 目录检测超时');
-        showFeedbackPopup('目录识别失败');
-      }
-    );
-    watchForMenu(() => {
-      if (_menuDetectionDone) return;
-      _menuDetectionDone = true;
-      addLog('🔍 检测到目录变化，重新扫描...');
-      const fresh = getMenuList_main();
-      if (fresh && fresh.length > 0) populateMenuSelect(fresh);
-    }, 20000);
+      populateMenuSelect(list);
+    }, () => {
+      addLog('⚠️ 目录检测超时，请展开目录后刷新');
+      showFeedbackPopup('目录识别失败');
+    });
   }
 
   window.addEventListener('UAI_MENU_READY', (e) => {
     const list = e.detail;
-    if (Array.isArray(list) && list.length > 0) {
-      _menuDetectionDone = true;
-      populateMenuSelect(list);
+    if (Array.isArray(list)) {
+      _menuDetectionDone = list.length > 0;
+      if (_menuDetectionDone) cancelMenuDetection();
+      const fresh = getMenuList_main();
+      populateMenuSelect(fresh);
     }
   });
 
@@ -1372,296 +1271,235 @@ function createControlPanel() {
   refreshBtn.onmouseenter = function () { this.style.background = '#e8e8e8'; };
   refreshBtn.onmouseleave = function () { this.style.background = '#f0f0f0'; };
 
+  let currentPlan = null;
+  let pendingPlan = null;
+
+  function readPlan() {
+    const jobs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked')).map((cb) => {
+      const index = Number(cb.dataset.index);
+      const item = menuList[index];
+      if (!item) throw new Error('目录已发生变化，请刷新目录后重试');
+      return {
+        ...item,
+        occurrence: menuList.slice(0, index).filter((node) => menuKey(node) === menuKey(item)).length,
+        targetTabStr: menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${index}"]`).value,
+        targetTaskStr: menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${index}"]`).value,
+      };
+    });
+    return buildPlan(Number(timeInput.value), jobs);
+  }
+
   pauseBtn.onclick = function () {
-    isPaused = !isPaused;
-    if (isPaused) {
-      pauseBtn.innerHTML = '▶️ 继续';
+    if (!isRunning) return;
+    if (!isPaused) {
+      isPaused = true;
+      pauseBtn.textContent = '▶️ 继续';
       pauseBtn.style.background = '#28a745';
-      addPauseLog('⏸️ 已暂停');
+      addPauseLog('⏸️ 已暂停，可修改目录、Tab、Task 和时长');
     } else {
-      pauseBtn.innerHTML = '⏸️ 暂停';
-      pauseBtn.style.background = '#ffa500';
-      removePauseLine();
-      const curTime = Math.max(1, +timeInput.value);
-      if (curTime !== lastTimeValue) {
-        removeCountdownLine();
-        const checkedCbs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'));
-        if (!checkedCbs.length) {
-          addLog('⚠️ 未勾选任何目录');
-          return;
+      try {
+        const nextPlan = readPlan();
+        if (nextPlan.signature !== currentPlan.signature) {
+          pendingPlan = nextPlan;
+          currentPlan = nextPlan;
+          shouldRestart = true;
+          removeCountdownLine();
+          addLog('⚙️ 配置已修改，将从第一个勾选目录重新开始完整的新计划');
+        } else {
+          addLog('▶️ 继续运行');
         }
-        addLog(`⚙️ 配置已修改，立即跳转: 共勾选${checkedCbs.length}个目录，总挂机约${curTime}分钟`);
-        lastTimeValue = curTime;
-        shouldRestart = true;
-      } else {
-        addLog('▶️ 继续运行');
+      } catch (error) {
+        addLog(`⚠️ ${error.message}，仍保持暂停`);
+        return;
       }
+      isPaused = false;
+      removePauseLine();
+      pauseBtn.textContent = '⏸️ 暂停';
+      pauseBtn.style.background = '#ffa500';
     }
+    syncPlaybackState();
   };
 
-  startBtn.onclick = function () {
-    if (isRunning) { addLog('⚠️ 已经在运行中...'); return; }
-    if (!Array.isArray(menuList) || menuList.length === 0) {
-      const fresh = getMenuList_main();
-      if (Array.isArray(fresh) && fresh.length > 0) {
-        menuList = fresh;
-        const oldVal = +(menuSelect.value || '0');
-        populateMenuSelect(menuList);
-        const restoredIdx = Math.min(oldVal, Math.max(0, menuList.length - 1));
-        menuSelect.value = String(restoredIdx);
-        menuTrigger.textContent = menuList[restoredIdx] ? menuList[restoredIdx].micro : '';
-        addLog('✅ 已重新识别目录，请重新点击开始刷课');
-      } else {
-        addLog('⚠️ 未识别到目录');
-        showFeedbackPopup('目录识别失败');
-      }
-      return;
-    }
+  stopBtn.onclick = function () {
+    isRunning = false;
+    isPaused = false;
+    shouldRestart = false;
+    syncPlaybackState();
+    for (const pending of pendingClicks.values()) pending.finish(false);
+  };
 
+  startBtn.onclick = async function () {
+    if (isRunning) return;
+    try { currentPlan = readPlan(); }
+    catch (error) { addLog(`⚠️ ${error.message}`); return; }
+    pendingPlan = null;
     isRunning = true;
     isPaused = false;
     shouldRestart = false;
     startBtn.style.display = 'none';
     pauseBtn.style.display = 'block';
-    pauseBtn.innerHTML = '⏸️ 暂停';
+    stopBtn.style.display = 'block';
+    pauseBtn.textContent = '⏸️ 暂停';
     pauseBtn.style.background = '#ffa500';
-
-    lastTimeValue = Math.max(1, +timeInput.value);
-    
-    let jobs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'))
-                    .map(cb => {
-                      const idx = cb.dataset.index;
-                      const tabInput = menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${idx}"]`);
-                      const taskInput = menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${idx}"]`);
-                      return {
-                        ...menuList[idx],
-                        targetTabStr: tabInput ? tabInput.value : '',
-                        targetTaskStr: taskInput ? taskInput.value : ''
-                      };
-                    })
-                    .filter(Boolean);
-                    
-    if (!jobs.length) {
-      addLog('⚠️ 未勾选任何目录，请先勾选目标目录');
+    syncPlaybackState();
+    try {
+      await runPlans(currentPlan, () => {
+        const plan = pendingPlan;
+        pendingPlan = null;
+        return plan;
+      });
+      addLog(isRunning ? '🎉 本地执行计划已完成，请在平台核对学习记录' : '⏹️ 已停止');
+    } catch (error) {
+      addLog(`❌ 执行已停止：${error.message || String(error)}`);
+    } finally {
       isRunning = false;
+      isPaused = false;
+      shouldRestart = false;
+      syncPlaybackState();
+      for (const pending of pendingClicks.values()) pending.finish(false);
+      removeCountdownLine();
+      removePauseLine();
       startBtn.style.display = 'block';
       pauseBtn.style.display = 'none';
-      return;
+      stopBtn.style.display = 'none';
     }
-
-    (async function loop() {
-      const perStepTime = (lastTimeValue * 60) / jobs.length;
-      addLog(`🚀 共勾选${jobs.length}个目录，总挂机约${lastTimeValue}分钟，每个目录约${Math.round(perStepTime)}秒`);
-
-      for (let idx = 0; isRunning && idx < jobs.length; idx++) {
-        await waitWhilePaused();
-        if (shouldRestart) {
-          shouldRestart = false;
-          jobs = Array.from(menuDropdown.querySelectorAll('.unipus-dir-checkbox:checked'))
-                      .map(cb => {
-                        const i2 = cb.dataset.index;
-                        const tInput = menuDropdown.querySelector(`.unipus-dir-tab-input[data-index="${i2}"]`);
-                        const tkInput = menuDropdown.querySelector(`.unipus-dir-task-input[data-index="${i2}"]`);
-                        return {
-                          ...menuList[i2],
-                          targetTabStr: tInput ? tInput.value : '',
-                          targetTaskStr: tkInput ? tkInput.value : ''
-                        };
-                      })
-                      .filter(Boolean);
-          idx = -1;
-          clickIKnow();
-          addLog(`🔄 配置已重置，将重新从第1个勾选的目录开始`);
-          continue;
-        }
-        if (!isRunning || isPaused) continue;
-
-        clickIKnow();
-        addLog(`📂 [${idx + 1}/${jobs.length}] ${jobs[idx].micro}`);
-
-        if (jobs[idx].element) {
-          clickIKnow();
-          const ok = await safeClickAsync(jobs[idx].element);
-          clickIKnow();
-          if (!ok) { addLog('⚠️ 目录点击失败，已跳过此目录'); continue; }
-        }
-
-        if (shouldRestart) continue;
-        await new Promise((r) => setTimeout(r, 2000));
-        if (shouldRestart) continue;
-
-        clickIKnow();
-        await waitForElement('.pc-header-tabs-container', 3000);
-        if (shouldRestart) continue;
-
-        clickIKnow();
-        const allTabs = getTabs();
-        const currentJob = jobs[idx];
-        
-        let targetTabs = allTabs;
-        if (allTabs.length > 0) {
-            const indices = parseIndices(currentJob.targetTabStr, allTabs.length);
-            targetTabs = indices.map(i => allTabs[i]).filter(Boolean);
-            if(targetTabs.length === 0) {
-                 addLog(`⚠️ 没有匹配的 Tab 序号，跳过当前目录`);
-                 continue;
-            }
-        }
-
-        let tabTime = perStepTime;
-        
-        if (targetTabs.length > 0) {
-          tabTime = perStepTime / targetTabs.length;
-          for (let t = 0; t < targetTabs.length; t++) {
-            if (shouldRestart) break;
-            await waitWhilePaused();
-            if (shouldRestart || !isRunning) break;
-            clickIKnow();
-            const originalIndex = allTabs.indexOf(targetTabs[t]);
-            addLog(`📑 正在刷 Tab[${originalIndex + 1}]: ${targetTabs[t].name}`);
-            
-            if (targetTabs[t].element && allTabs.length > 1 && !isTabActive(targetTabs[t])) { 
-                clickIKnow(); safeClick(targetTabs[t].element); clickIKnow(); 
-            }
-            if (shouldRestart) break;
-            await new Promise((r) => setTimeout(r, 2000));
-            if (shouldRestart) break;
-            clickIKnow();
-            await waitForElement('.pc-header-tasks-row', 3000);
-            if (shouldRestart) break;
-            
-            let videoPlayed = false;
-            if (videoPlaybackEnabled) {
-              addLog('🎬 等待视频播放结束...');
-              videoPlayed = await waitForVideoEnd();
-              if (videoPlayed) {
-                addLog('🎬 视频播放完成，继续处理本页任务');
-              }
-            }
-            clickIKnow();
-            
-            const allTasks = getTasks();
-            let targetTasks = allTasks;
-            if (allTasks.length > 0) {
-                const indices = parseIndices(currentJob.targetTaskStr, allTasks.length);
-                targetTasks = indices.map(i => allTasks[i]).filter(Boolean);
-            }
-            
-            if (targetTasks.length > 0) {
-              const taskTime = tabTime / targetTasks.length;
-              for (let k = 0; k < targetTasks.length; k++) {
-                if (shouldRestart) break;
-                await waitWhilePaused();
-                if (shouldRestart || !isRunning) break;
-                
-                const origTaskIndex = allTasks.indexOf(targetTasks[k]);
-                const taskName = `✏️ Task[${origTaskIndex + 1}]: ${targetTasks[k].name}`;
-                if (targetTasks[k].element && allTasks.length > 1 && !isTaskActive(targetTasks[k])) { 
-                    clickIKnow(); targetTasks[k].element.click(); clickIKnow(); 
-                }
-                await waitTime(taskTime, taskName);
-                if (shouldRestart) break;
-                clickIKnow();
-              }
-              if (shouldRestart) break;
-            } else {
-              if (videoPlayed) continue;
-              await waitTime(tabTime, '');
-              if (shouldRestart) break;
-              clickIKnow();
-            }
-          }
-          if (shouldRestart) continue;
-        } else {
-          // Fallback if no tabs found but tasks exist directly
-          const allTasks = getTasks();
-          let targetTasks = allTasks;
-          if (allTasks.length > 0) {
-              const indices = parseIndices(currentJob.targetTaskStr, allTasks.length);
-              targetTasks = indices.map(i => allTasks[i]).filter(Boolean);
-          }
-
-          if (targetTasks.length > 0) {
-            const taskTime = tabTime / targetTasks.length;
-            for (let k = 0; k < targetTasks.length; k++) {
-              if (shouldRestart) break;
-              await waitWhilePaused();
-              if (shouldRestart || !isRunning) break;
-              
-              const origTaskIndex = allTasks.indexOf(targetTasks[k]);
-              const taskName = `✏️ Task[${origTaskIndex + 1}]: ${targetTasks[k].name}`;
-              if (targetTasks[k].element && allTasks.length > 1 && !isTaskActive(targetTasks[k])) { 
-                  clickIKnow(); targetTasks[k].element.click(); clickIKnow(); 
-              }
-              await waitTime(taskTime, taskName);
-              if (shouldRestart) break;
-              clickIKnow();
-            }
-            if (shouldRestart) continue;
-          } else {
-            await waitTime(tabTime, '');
-            if (shouldRestart) continue;
-            clickIKnow();
-          }
-        }
-      }
-
-      addLog('🎉 刷课完成！');
-      isRunning = false;
-      startBtn.style.display = 'block';
-      pauseBtn.style.display = 'none';
-      startBtn.innerHTML = '🚀 开始刷课';
-    })();
   };
 }
 
 async function waitWhilePaused() {
-  while (isPaused && isRunning && !shouldRestart) {
-    await new Promise((r) => setTimeout(r, 500));
+  while (isPaused && isRunning && !shouldRestart) await sleep(100);
+}
+
+async function checkpoint() {
+  await waitWhilePaused();
+  return isRunning && !shouldRestart;
+}
+
+async function waitDelay(milliseconds) {
+  let remaining = milliseconds;
+  while (remaining > 0) {
+    if (!await checkpoint()) return false;
+    const start = performance.now();
+    await sleep(Math.min(remaining, 100));
+    // A pause during this short slice must not advance the next action.
+    if (!isPaused) remaining -= performance.now() - start;
+  }
+  return checkpoint();
+}
+
+async function runPlans(initialPlan, takePendingPlan) {
+  let plan = initialPlan;
+  while (isRunning) {
+    addLog(`🚀 已选择 ${plan.jobs.length} 个目录，计划等待 ${plan.minutes} 分钟，每个目录约 ${Math.round(plan.perStepTime)} 秒`);
+    for (let index = 0; index < plan.jobs.length; index++) {
+      if (!await checkpoint()) break;
+      addLog(`📂 [${index + 1}/${plan.jobs.length}] ${plan.jobs[index].micro}`);
+      await runJob(plan.jobs[index], plan.perStepTime);
+    }
+    // Restart is checked before completion, including the final directory.
+    if (!isRunning) return;
+    if (shouldRestart) {
+      plan = takePendingPlan();
+      if (!plan) throw new Error('缺少更新后的执行计划');
+      shouldRestart = false;
+      syncPlaybackState();
+      continue;
+    }
+    return;
+  }
+}
+
+async function runJob(job, directoryTime) {
+  const current = getMenuList_main().filter((item) => menuKey(item) === menuKey(job))[job.occurrence || 0];
+  if (!current) throw new Error(`目录“${job.micro}”已失效，请刷新目录后重试`);
+  const clicked = await safeClickAsync(current.element);
+  if (!await checkpoint()) return;
+  if (!clicked) {
+    throw new Error(`目录“${job.micro}”已失效或点击失败，请刷新目录后重试`);
+  }
+  if (!await waitDelay(2000)) return;
+  await waitForElement('.pc-header-tabs-container, #header ul.TabsBox, .pc-header-tasks-row', 3000);
+  if (!await checkpoint()) return;
+  const allTabs = getTabs();
+  const tabIndices = allTabs.length ? parseIndices(job.targetTabStr, allTabs.length) : [];
+  if ((allTabs.length && !tabIndices.length) || (!allTabs.length && job.targetTabStr.trim())) {
+    throw new Error(`目录“${job.micro}”没有匹配的 Tab 序号`);
+  }
+  const selectedTabs = tabIndices.length ? tabIndices : [null];
+  const tabTime = directoryTime / selectedTabs.length;
+  for (const tabIndex of selectedTabs) {
+    if (!await checkpoint()) return;
+    if (tabIndex !== null) {
+      const tab = getTabs()[tabIndex];
+      if (!tab) throw new Error('Tab 列表发生变化，请刷新页面后重试');
+      addLog(`📑 Tab[${tabIndex + 1}]: ${tab.name}`);
+      if (!isTabActive(tab) && !safeClick(tab.element)) throw new Error(`Tab“${tab.name}”点击失败`);
+      if (!await waitDelay(2000)) return;
+      await waitForElement('.pc-header-tasks-row', 3000);
+      if (!await checkpoint()) return;
+    }
+    let videoResult = 'absent';
+    if (videoPlaybackEnabled) videoResult = await waitForVideoEnd();
+    if (!await checkpoint()) return;
+    const tasks = getTasks();
+    const taskIndices = tasks.length ? parseIndices(job.targetTaskStr, tasks.length) : [];
+    if ((tasks.length && !taskIndices.length) || (!tasks.length && job.targetTaskStr.trim())) {
+      throw new Error(`目录“${job.micro}”没有匹配的 Task 序号`);
+    }
+    if (!taskIndices.length) {
+      if (videoResult !== 'ended') await waitTime(tabTime, '📄 当前页面');
+      continue;
+    }
+    for (const taskIndex of taskIndices) {
+      if (!await checkpoint()) return;
+      const task = getTasks()[taskIndex];
+      if (!task) throw new Error('Task 列表发生变化，请刷新页面后重试');
+      if (!isTaskActive(task)) {
+        if (!safeClick(task.element)) throw new Error(`Task“${task.name}”点击失败`);
+        if (!await waitDelay(500)) return;
+      }
+      await waitTime(tabTime / taskIndices.length, `✏️ Task[${taskIndex + 1}]: ${task.name}`);
+    }
   }
 }
 
 async function waitTime(seconds, taskName) {
-  let remaining = Math.round(seconds);
-  let tick = 0;
-  while (remaining > 0) {
-    await waitWhilePaused();
-    if (shouldRestart || !isRunning) break;
-    if (tick % 5 === 0) clickIKnow();
-    tick++;
-    // 视频播放检测：播放时暂停倒计时
-    if (videoPlaybackEnabled) {
-      const video = findVideoElement();
-      if (video && isVideoPlaying(video)) {
-        if (taskName) addLog(taskName, true);
-        addLog('🎬 检测到视频播放中，暂停倒计时...');
-        await waitForVideoEnd();
-        addLog('🎬 视频播放结束，恢复倒计时');
-        continue;
+  let remaining = seconds * 1000;
+  let nextPopupCheck = 0;
+  try {
+    while (remaining > 0) {
+      if (!await checkpoint()) return;
+      if (performance.now() >= nextPopupCheck) {
+        clickIKnow();
+        nextPopupCheck = performance.now() + 5000;
       }
-      if (video && video.paused && !video.ended) {
-        playVideo();
+      if (videoPlaybackEnabled) {
+        const video = findVideoElement();
+        if (video && !video.ended) {
+          addLog('🎬 正在等待视频，视频期间不计入页面等待时长');
+          const result = await waitForVideoEnd();
+          if (result === 'ended') addLog('🎬 视频播放结束，恢复页面计时');
+          continue;
+        }
       }
+      addLog(`${taskName} ⏳${Math.ceil(remaining / 1000)}秒`, true);
+      const start = performance.now();
+      await sleep(Math.min(remaining, 250));
+      if (!isPaused) remaining -= performance.now() - start;
     }
-    if (taskName) addLog(`${taskName} ⏳${remaining}秒`, true);
-    await new Promise((r) => setTimeout(r, 1000));
-    remaining--;
-  }
-  if (taskName && !shouldRestart) {
-    const log = document.getElementById('unipus-log');
-    const cl = log?.querySelector('.countdown-line');
-    if (cl) cl.remove();
-    addLog(taskName);
-  } else if (shouldRestart) {
+    if (await checkpoint()) addLog(`${taskName} ✓`);
+  } finally {
     removeCountdownLine();
   }
 }
 
-window.addEventListener('load', function () {
-  setTimeout(() => {
-    createFloatingBall();
-    clickIKnow();
-  }, 1600);
-});
+function initializeUI() {
+  if (!document.getElementById('unipus-ball')) createFloatingBall();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeUI, { once: true });
+} else {
+  initializeUI();
+}
 
 })();

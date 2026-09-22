@@ -1,0 +1,12 @@
+{
+  "name": "unipus-ai-auto-player",
+  "version": "5.2.14",
+  "private": true,
+  "description": "Development checks for the standalone userscript",
+  "scripts": {
+    "test": "node --check unipus_ai_auto_player.user.js && node --test tests/*.test.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
