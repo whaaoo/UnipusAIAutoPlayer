@@ -171,10 +171,3 @@ npm test
 测试使用 Node.js 内置测试运行器、隔离的脚本上下文、可控计时器及轻量 DOM 测试夹具，覆盖配置重启、暂停/停止、视频生命周期、输入校验、消息来源、请求回包、界面恢复和任务执行。它们不替代真实课程页面的浏览器验证。
 
 手动验证建议：选择单个目录运行；暂停后只修改 Tab/Task；在最后一个目录修改时长并继续；播放视频时暂停和关闭视频模式；停止后再次启动；刷新目录后确认勾选和序号保留。对未适配的跨域课程请保留错误日志并按需提供脱敏结构。
-
----
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=whaaoo/UnipusAIAutoPlayer&type=Date)](https://star-history.com/#whaaoo/UnipusAIAutoPlayer&Date)
-
